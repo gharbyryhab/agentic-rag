@@ -1,0 +1,51 @@
+# ============================================================
+# Agentic RAG — Dependencies
+# Stack : Gemini + BAAI/bge-small-en-v1.5 + ChromaDB + LangChain + LangGraph
+# ============================================================
+
+# --- Core ---
+python-dotenv>=1.0.1
+pydantic>=2.7.0
+pydantic-settings>=2.2.1
+pyyaml>=6.0.1
+loguru>=0.7.2
+tqdm>=4.66.0
+
+# --- LLM (Gemini) ---
+google-generativeai>=0.7.2
+
+# --- LangChain ecosystem ---
+langchain>=0.2.11
+langchain-core>=0.2.23
+langchain-community>=0.2.10
+langchain-google-genai>=1.0.8
+langchain-huggingface>=0.0.3
+langchain-chroma>=0.1.2
+langchain-text-splitters>=0.2.2
+
+# --- Agent orchestration ---
+langgraph>=0.1.16
+
+# --- Embeddings (local, CPU) ---
+sentence-transformers>=3.0.1
+torch>=2.3.0
+numpy>=1.26.4
+huggingface-hub>=0.23.0
+
+# --- Vector store ---
+chromadb>=0.5.3
+
+# --- Document loaders ---
+pypdf>=4.2.0
+python-docx>=1.1.2
+markdown>=3.6
+beautifulsoup4>=4.12.3
+unstructured>=0.14.0
+
+# --- Tests ---
+pytest>=8.2.0
+pytest-cov>=5.0.0
+
+# --- Dev tools ---
+ruff>=0.4.4
+black>=24.4.2

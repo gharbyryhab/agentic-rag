@@ -1,0 +1,56 @@
+# --- Secrets ---
+.env
+.env.local
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --- Virtual envs ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Editors / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# --- Project data ---
+data/raw/*
+data/processed/*
+data/chunks/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/chunks/.gitkeep
+
+# --- Vector store & cache ---
+vector_store/chroma/
+vector_store/embedding_cache/
+!vector_store/.gitkeep
+
+# --- Logs ---
+logs/*.log
+logs/*
+!logs/.gitkeep
+
+# --- HuggingFace cache ---
+.cache/
+models/
+
+# --- Notebooks ---
+.ipynb_checkpoints/

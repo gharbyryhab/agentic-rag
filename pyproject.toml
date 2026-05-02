@@ -1,0 +1,23 @@
+[project]
+name = "agentic-rag"
+version = "0.1.0"
+description = "Agentic RAG system for data science / ML / AI knowledge base"
+authors = [{ name = "dali", email = "medalimraihi2018@gmail.com" }]
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-v --tb=short"

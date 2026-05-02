@@ -1,0 +1,62 @@
+# ============================================================
+# Agentic RAG — Main configuration
+# ============================================================
+
+project:
+  name: agentic-rag
+  version: 0.1.0
+
+paths:
+  data_raw: data/raw
+  data_processed: data/processed
+  data_chunks: data/chunks
+  vector_store: vector_store/chroma
+  embedding_cache: vector_store/embedding_cache
+  logs: logs
+
+# ---------- Embeddings ----------
+embeddings:
+  model_name: BAAI/bge-small-en-v1.5
+  device: cpu              # MX130 souvent plus lente que CPU — benchmarker avant de passer à "cuda"
+  normalize: true
+  batch_size: 32
+  # Préfixes recommandés par BAAI pour bge-*-en-v1.5
+  query_prefix: "Represent this sentence for searching relevant passages: "
+  passage_prefix: ""
+
+# ---------- Chunking ----------
+chunking:
+  strategy: recursive       # recursive | fixed
+  chunk_size: 800
+  chunk_overlap: 120
+  separators: ["\n\n", "\n", ". ", " ", ""]
+
+# ---------- Vector store ----------
+vector_store:
+  provider: chroma
+  collection_name: ds_ml_kb
+  persist_directory: vector_store/chroma
+  distance: cosine
+
+# ---------- Retrieval ----------
+retrieval:
+  top_k: 5
+  score_threshold: 0.0
+  use_mmr: true             # Maximal Marginal Relevance pour la diversité
+  mmr_lambda: 0.5
+  fetch_k: 20               # candidats avant re-ranking MMR
+
+# ---------- LLM (Gemini) ----------
+llm:
+  provider: gemini
+  model_name: gemini-2.5-flash    # gemini-1.5-pro pour plus de qualité
+  temperature: 0.2
+  max_output_tokens: 2048
+  top_p: 0.95
+
+# ---------- Agent ----------
+agent:
+  max_iterations: 6
+  enable_query_rewriting: true
+  enable_grading: true            # filtre les chunks non pertinents avant generation
+  verbose: true
