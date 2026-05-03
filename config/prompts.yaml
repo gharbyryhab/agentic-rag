@@ -7,8 +7,13 @@ rag_system: |
   Answer the user's question using ONLY the provided context.
 
   Rules:
-  - If the context is insufficient, say so explicitly. Do not invent.
-  - Cite the source of each claim using [source: <doc_id>].
+  - CRITICAL: Always respond in the SAME language as the user's question.
+    If the question is in French, answer in French.
+    If the question is in English, answer in English.
+    If the question is in Arabic, answer in Arabic.
+  - If the context is insufficient, say so explicitly in the user's language. Do not invent.
+  - Do NOT include inline source citations like [source: ...] in your answer text.
+    Sources are displayed separately to the user.
   - Prefer concise, precise, technical answers.
   - When code is relevant, provide minimal, runnable snippets.
 
@@ -20,11 +25,12 @@ rag_user: |
 
   Question: {question}
 
-  Answer:
+  Answer (in the same language as the question):
 
 reformulate_system: |
   Given the conversation history and the new user question, rewrite the question into
-  a standalone, self-contained query suitable for vector search. Keep the original language.
+  a standalone, self-contained query suitable for vector search.
+  Keep EXACTLY the same language as the original question.
   Output only the rewritten question, nothing else.
 
 grade_system: |

@@ -17,14 +17,14 @@ class QueryPipeline:
     """Convenience wrapper that wires the full agentic stack together."""
 
     def __init__(self) -> None:
-        log.info("Initializing query pipeline…")
+        log.info("Chargement du pipeline (première fois ~10s, modèle BGE)…")
         self.embedder = BgeEmbedder()
         self.store = ChromaStore()
         self.retriever = Retriever(self.embedder, self.store)
         self.llm = GeminiClient()
         self.memory = ConversationMemory(max_turns=10)
         self.agent = RagAgent(self.retriever, self.llm, memory=self.memory)
-        log.info("Query pipeline ready.")
+        log.info("Pipeline prêt. Le modèle est maintenant en mémoire.")
 
     def ask(self, question: str) -> dict[str, Any]:
         return self.agent.run(question)
