@@ -14,12 +14,6 @@ log = get_logger(__name__)
 
 
 class GeminiClient(LLM):
-    """
-    Thin wrapper over `ChatGoogleGenerativeAI` (LangChain).
-
-    Exposes a simple `.generate()` / `.chat()` API for direct usage,
-    plus `.as_langchain()` to get the underlying model for LangGraph nodes.
-    """
 
     def __init__(self) -> None:
         cfg = get_settings()
@@ -39,27 +33,94 @@ class GeminiClient(LLM):
         )
         log.info(f"Gemini client ready: {self._cfg.model_name}")
 
-    # ---------- High-level API ----------
-    def generate(self, prompt: str, system: str | None = None, **kwargs: Any) -> str:
+    def _is_gemma3(self) -> bool:
+        return "gemma-3" in self._cfg.model_name
+
+    # ── NOUVELLE MÉTHODE CENTRALE ──────────────────────────────────────────
+    def _extract_text(self, result: AIMessage) -> str:
+        """
+        Extrait proprement le texte d'une réponse LLM quel que soit le modèle.
+
+        Cas 1 — gemma-3-* → result.content est une str directe
+            "Le overfitting se produit..."
+            → retourne tel quel
+
+        Cas 2 — gemma-4-*, gemini-flash-lite → result.content est une liste de blocs :
+            [{'type': 'thinking', 'thinking': '...'}, {'type': 'text', 'text': '...'}]
+            → extrait uniquement le bloc type='text'
+
+        Cas 3 — autres modèles → result.content est une str
+            → retourne tel quel
+        """
+        content = result.content
+
+        # Cas 1 et 3 : string directe → retourner tel quel
+        if isinstance(content, str):
+            return content
+
+        # Cas 2 : liste de blocs → extraire uniquement les blocs 'text'
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    # 'thinking' → ignoré volontairement
+                elif isinstance(block, str):
+                    text_parts.append(block)
+            result_text = "\n".join(text_parts).strip()
+            if result_text:
+                return result_text
+            # Si aucun bloc text trouvé → fallback str()
+            log.warning(f"No 'text' block found in response, blocks: {[b.get('type') for b in content if isinstance(b, dict)]}")
+            return str(content)
+
+        # Fallback ultime
+        return str(content)
+
+    # ──────────────────────────────────────────────────────────────────────
+
+    def generate(self, prompt: str, system: str | None = None, **kwargs) -> str:
         msgs: list[BaseMessage] = []
         if system:
-            msgs.append(SystemMessage(content=system))
+            if self._is_gemma3():
+                # Gemma 3 ne supporte pas SystemMessage → fusionner dans le prompt
+                prompt = f"{system}\n\n{prompt}"
+            else:
+                msgs.append(SystemMessage(content=system))
         msgs.append(HumanMessage(content=prompt))
         result: AIMessage = self._model.invoke(msgs, **kwargs)
-        return result.content if isinstance(result.content, str) else str(result.content)
+        return self._extract_text(result)   # ← remplace l'ancien str(result.content)
 
     def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         msgs: list[BaseMessage] = []
+
+        # Extraire le system s'il existe
+        system_content: str | None = None
+        for m in messages:
+            if m["role"] == "system":
+                system_content = m["content"]
+                break
+
         for m in messages:
             role, content = m["role"], m["content"]
             if role == "system":
-                msgs.append(SystemMessage(content=content))
+                if self._is_gemma3():
+                    continue  # géré ci-dessous sur le 1er HumanMessage
+                else:
+                    msgs.append(SystemMessage(content=content))
             elif role == "user":
-                msgs.append(HumanMessage(content=content))
+                if self._is_gemma3() and system_content and not msgs:
+                    # Fusionner system dans le 1er message utilisateur
+                    msgs.append(HumanMessage(content=f"{system_content}\n\n{content}"))
+                    system_content = None
+                else:
+                    msgs.append(HumanMessage(content=content))
             elif role == "assistant":
                 msgs.append(AIMessage(content=content))
+
         result: AIMessage = self._model.invoke(msgs, **kwargs)
-        return result.content if isinstance(result.content, str) else str(result.content)
+        return self._extract_text(result)   # ← remplace l'ancien str(result.content)
 
     def as_langchain(self) -> ChatGoogleGenerativeAI:
         return self._model

@@ -28,10 +28,31 @@ rag_user: |
   Answer (in the same language as the question):
 
 reformulate_system: |
-  Given the conversation history and the new user question, rewrite the question into
-  a standalone, self-contained query suitable for vector search.
-  Keep EXACTLY the same language as the original question.
-  Output only the rewritten question, nothing else.
+  You are a query rewriter for a RAG system.
+
+  Your task: given a conversation history and a follow-up question, rewrite the
+  follow-up question into a COMPLETE, STANDALONE search query that contains ALL
+  the necessary context from the conversation history.
+
+  Rules:
+
+  ALWAYS include the main topic from the conversation in the rewritten query
+
+  If the user says "explain again", "I don't understand", "more details",
+  "give an example" → keep the SAME topic as the previous question
+
+  Output ONLY the rewritten question, nothing else, no explanation
+
+  Keep the same language as the follow-up question
+
+  Example:
+  History:
+  USER: Quelle est la différence entre le Gradient Boosting et Random Forest ?
+  ASSISTANT: Le Gradient Boosting construit des arbres de manière séquentielle...
+
+  Follow-up: Donne-moi les principaux hyperparamètres à optimiser pour le premier.
+
+  Rewritten: Quels sont les principaux hyperparamètres à optimiser pour un modèle de Gradient Boosting ?
 
 grade_system: |
   You are a grader assessing relevance of a retrieved document to a user question.

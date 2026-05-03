@@ -122,33 +122,110 @@ class RagAgent(BaseAgent):
         return g.compile()
 
     # ---------- Nodes ----------
+    # def _node_rewrite(self, state: RagState) -> RagState:
+    #     # Only reformulate when there's a real conversation context :
+    #     # at least one prior assistant turn. Without that, the query is
+    #     # already standalone and reformulating is a wasted LLM call.
+    #     history_turns = self.memory.history()
+    #     has_prior_assistant = any(t["role"] == "assistant" for t in history_turns)
+
+    #     if not has_prior_assistant:
+    #         return {
+    #             "rewritten_question": state["question"],
+    #             "trace": state.get("trace", []) + [{"node": "rewrite", "skipped": "first turn"}],
+    #         }
+
+    #     # Build history without the current user question (last entry)
+    #     prior = history_turns[:-1] if history_turns and history_turns[-1]["role"] == "user" else history_turns
+    #     history_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in prior)
+
+    #     system = self.prompts["reformulate_system"]
+    #     user = f"Conversation history:\n{history_text}\n\nNew question: {state['question']}"
+    #     try:
+    #         rewritten = self.llm.generate(user, system=system).strip()
+    #     except Exception as e:  # noqa: BLE001
+    #         log.warning(f"Rewrite failed, falling back to original question: {e}")
+    #         rewritten = state["question"]
+    #     log.debug(f"Rewritten: {rewritten}")
+    #     return {
+    #         "rewritten_question": rewritten,
+    #         "trace": state.get("trace", []) + [{"node": "rewrite", "output": rewritten}],
+    #     }
+    # def _node_rewrite(self, state: RagState) -> RagState:
+    #     history_turns = self.memory.history()
+    #     has_prior_assistant = any(t["role"] == "assistant" for t in history_turns)
+
+    #     if not has_prior_assistant:
+    #         return {
+    #             "rewritten_question": state["question"],
+    #             "documents": [],            # ← AJOUT : reset
+    #             "relevant_documents": [],   # ← AJOUT : reset
+    #             "trace": state.get("trace", []) + [{"node": "rewrite", "skipped": "first turn"}],
+    #         }
+
+    #     prior = history_turns[:-1] if history_turns and history_turns[-1]["role"] == "user" else history_turns
+    #     history_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in prior)
+
+    #     system = self.prompts["reformulate_system"]
+    #     user = f"Conversation history:\n{history_text}\n\nNew question: {state['question']}"
+    #     try:
+    #         rewritten = self.llm.generate(user, system=system).strip()
+    #         log.info(f"Rewrite: '{state['question']}' → '{rewritten}'")
+    #     except Exception as e:
+    #         log.warning(f"Rewrite failed, falling back: {e}")
+    #         rewritten = state["question"]
+
+    #     return {
+    #         "rewritten_question": rewritten,
+    #         "documents": [],            # ← AJOUT : reset les docs du tour précédent
+    #         "relevant_documents": [],   # ← AJOUT : reset
+    #         "trace": state.get("trace", []) + [{"node": "rewrite", "output": rewritten}],
+    #     }
+
     def _node_rewrite(self, state: RagState) -> RagState:
-        # Only reformulate when there's a real conversation context :
-        # at least one prior assistant turn. Without that, the query is
-        # already standalone and reformulating is a wasted LLM call.
         history_turns = self.memory.history()
         has_prior_assistant = any(t["role"] == "assistant" for t in history_turns)
 
         if not has_prior_assistant:
             return {
                 "rewritten_question": state["question"],
+                "documents": [],
+                "relevant_documents": [],
                 "trace": state.get("trace", []) + [{"node": "rewrite", "skipped": "first turn"}],
             }
 
-        # Build history without the current user question (last entry)
         prior = history_turns[:-1] if history_turns and history_turns[-1]["role"] == "user" else history_turns
         history_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in prior)
 
         system = self.prompts["reformulate_system"]
-        user = f"Conversation history:\n{history_text}\n\nNew question: {state['question']}"
+        user = f"Conversation history:\n{history_text}\n\nFollow-up question: {state['question']}\n\nRewritten standalone query:"
+        #                                                                                              ↑ guide le modèle
         try:
             rewritten = self.llm.generate(user, system=system).strip()
-        except Exception as e:  # noqa: BLE001
-            log.warning(f"Rewrite failed, falling back to original question: {e}")
+            
+            # ── NOUVEAU : vérifier que le rewrite a vraiment changé quelque chose ──
+            original = state["question"].strip().lower()
+            if rewritten.strip().lower() == original:
+                # Le modèle n'a pas reformulé → on construit manuellement
+                # On prend la dernière question USER de l'historique comme topic
+                last_user_q = next(
+                    (t["content"] for t in reversed(prior) if t["role"] == "user"),
+                    None
+                )
+                if last_user_q:
+                    rewritten = f"{state['question']} — {last_user_q}"
+                    log.warning(f"Rewrite unchanged, using fallback: '{rewritten}'")
+                
+            log.info(f"Rewrite: '{state['question']}' → '{rewritten}'")
+            
+        except Exception as e:
+            log.warning(f"Rewrite failed, falling back: {e}")
             rewritten = state["question"]
-        log.debug(f"Rewritten: {rewritten}")
+
         return {
             "rewritten_question": rewritten,
+            "documents": [],
+            "relevant_documents": [],
             "trace": state.get("trace", []) + [{"node": "rewrite", "output": rewritten}],
         }
 
@@ -203,7 +280,11 @@ class RagAgent(BaseAgent):
         )
         system = self.prompts["rag_system"]
         user = self.prompts["rag_user"].format(context=context, question=question)
-        answer = self.llm.generate(user, system=system)
+        try:
+            answer = self.llm.generate(user, system=system)
+        except Exception as e:
+            log.error(f"Generation failed: {e}")
+            answer = "Une erreur s'est produite lors de la génération. Réessaie."
         return {
             "answer": answer,
             "trace": state.get("trace", []) + [{"node": "generate", "answer_len": len(answer)}],
@@ -215,10 +296,18 @@ class RagAgent(BaseAgent):
         user = self.prompts["grade_user"].format(document=document[:2000], question=question)
         try:
             verdict = self.llm.generate(user, system=system).strip().lower()
-            return verdict.startswith("y")
-        except Exception as e:  # noqa: BLE001
-            log.warning(f"Grader failed, keeping doc by default: {e}")
+            # Cherche "yes" n'importe où, pas seulement au début
+            has_yes = "yes" in verdict
+            has_no = "no" in verdict
+            if has_yes and not has_no:
+                return True
+            if has_no and not has_yes:
+                return False
+            # Ambiguë → garder le chunk (fail-safe)
             return True
+        except Exception as e:
+            log.warning(f"Grader failed, keeping doc: {e}")
+            return True  # fail-safe
 
     def _decide_after_grade(self, state: RagState) -> str:
         n_relevant = len(state.get("relevant_documents", []))
@@ -226,7 +315,7 @@ class RagAgent(BaseAgent):
 
         if n_relevant >= 1:
             return "generate"
-        if iterations < 1:  # one rewrite retry
+        if iterations < 1:
             state["iterations"] = iterations + 1
             return "rewrite"
-        return "stop"
+        return "stop"  # → va vers "generate" avec docs vides → géré par le try/except
