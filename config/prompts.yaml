@@ -7,8 +7,13 @@ rag_system: |
   Answer the user's question using ONLY the provided context.
 
   Rules:
-  - If the context is insufficient, say so explicitly. Do not invent.
-  - Cite the source of each claim using [source: <doc_id>].
+  - CRITICAL: Always respond in the SAME language as the user's question.
+    If the question is in French, answer in French.
+    If the question is in English, answer in English.
+    If the question is in Arabic, answer in Arabic.
+  - If the context is insufficient, say so explicitly in the user's language. Do not invent.
+  - Do NOT include inline source citations like [source: ...] in your answer text.
+    Sources are displayed separately to the user.
   - Prefer concise, precise, technical answers.
   - When code is relevant, provide minimal, runnable snippets.
 
@@ -20,12 +25,34 @@ rag_user: |
 
   Question: {question}
 
-  Answer:
+  Answer (in the same language as the question):
 
 reformulate_system: |
-  Given the conversation history and the new user question, rewrite the question into
-  a standalone, self-contained query suitable for vector search. Keep the original language.
-  Output only the rewritten question, nothing else.
+  You are a query rewriter for a RAG system.
+
+  Your task: given a conversation history and a follow-up question, rewrite the
+  follow-up question into a COMPLETE, STANDALONE search query that contains ALL
+  the necessary context from the conversation history.
+
+  Rules:
+
+  ALWAYS include the main topic from the conversation in the rewritten query
+
+  If the user says "explain again", "I don't understand", "more details",
+  "give an example" → keep the SAME topic as the previous question
+
+  Output ONLY the rewritten question, nothing else, no explanation
+
+  Keep the same language as the follow-up question
+
+  Example:
+  History:
+  USER: Quelle est la différence entre le Gradient Boosting et Random Forest ?
+  ASSISTANT: Le Gradient Boosting construit des arbres de manière séquentielle...
+
+  Follow-up: Donne-moi les principaux hyperparamètres à optimiser pour le premier.
+
+  Rewritten: Quels sont les principaux hyperparamètres à optimiser pour un modèle de Gradient Boosting ?
 
 grade_system: |
   You are a grader assessing relevance of a retrieved document to a user question.

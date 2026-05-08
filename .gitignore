@@ -54,3 +54,12 @@ models/
 
 # --- Notebooks ---
 .ipynb_checkpoints/
+
+
+# Ghaya personal files : 
+br.txt
+output.txt
+/scripts/benchmark/
+/scripts/classify_books.py
+/scripts/test_gemini.py
+/data/*.json
