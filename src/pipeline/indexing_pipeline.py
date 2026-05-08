@@ -1,4 +1,7 @@
-"""End-to-end indexing : raw files -> chunks -> embeddings -> ChromaDB."""
+"""End-to-end indexing :
+   raw files -> load+clean+headers/footers -> chunk (semantic) ->
+   filter pathological -> dedup -> embed -> Chroma + BM25.
+"""
 from __future__ import annotations
 
 import uuid
@@ -7,9 +10,9 @@ from pathlib import Path
 from tqdm import tqdm
 
 from src.embeddings import BgeEmbedder
-from src.ingestion import chunk_documents, load_documents
+from src.ingestion import apply_filters, chunk_documents, load_documents
 from src.utils import get_logger
-from src.vector_store import ChromaStore
+from src.vector_store import BM25Store, ChromaStore
 
 log = get_logger(__name__)
 
@@ -23,9 +26,11 @@ class IndexingPipeline:
         self,
         embedder: BgeEmbedder | None = None,
         store: ChromaStore | None = None,
+        bm25: BM25Store | None = None,
     ) -> None:
         self.embedder = embedder or BgeEmbedder()
         self.store = store or ChromaStore()
+        self.bm25 = bm25 or BM25Store()
 
     def run(
         self,
@@ -35,22 +40,32 @@ class IndexingPipeline:
     ) -> dict[str, int]:
         if reset:
             self.store.reset()
+            self.bm25.reset()
 
+        # ---- Load + headers/footers stripped + Tier-1 metadata injected ----
         docs = load_documents(source)
         if not docs:
             log.warning(f"No documents found at {source}")
             return {"docs": 0, "chunks": 0, "indexed": 0}
 
+        # ---- Chunk (semantic or recursive depending on config) ----
         chunks = chunk_documents(docs)
         if not chunks:
             return {"docs": len(docs), "chunks": 0, "indexed": 0}
 
-        # Drop chunks that became empty after cleaning
+        # ---- Drop empty after cleaning ----
         chunks = [c for c in chunks if c.page_content and c.page_content.strip()]
+
+        # ---- Pathological filter + dedup ----
+        chunks = apply_filters(chunks)
 
         if limit is not None:
             chunks = chunks[:limit]
             log.info(f"--limit applied : keeping {len(chunks)} chunks")
+
+        if not chunks:
+            log.warning("No chunks survived filtering.")
+            return {"docs": len(docs), "chunks": 0, "indexed": 0}
 
         texts = [c.page_content for c in chunks]
         metadatas = [self._sanitize_meta(c.metadata) for c in chunks]
@@ -70,6 +85,8 @@ class IndexingPipeline:
                     embeddings=vectors,
                     metadatas=batch_metas,
                 )
+                # BM25 is built in parallel — same ids/texts/metadatas
+                self.bm25.add(ids=batch_ids, texts=batch_texts, metadatas=batch_metas)
             except Exception as e:  # noqa: BLE001
                 log.error(f"Batch [{start}:{end}] failed, skipping: {e}")
                 continue
@@ -78,6 +95,7 @@ class IndexingPipeline:
             "docs": len(docs),
             "chunks": len(chunks),
             "indexed": self.store.count(),
+            "bm25_indexed": self.bm25.count(),
         }
 
     # ---------- Helpers ----------

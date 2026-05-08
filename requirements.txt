@@ -22,6 +22,12 @@ langchain-google-genai>=1.0.8
 langchain-huggingface>=0.0.3
 langchain-chroma>=0.1.2
 langchain-text-splitters>=0.2.2
+langchain-experimental>=0.0.62      # SemanticChunker
+
+# --- Lexical search & dedup ---
+rank-bm25>=0.2.2                    # BM25 keyword index
+datasketch>=1.6.5                   # MinHash-LSH for near-duplicate detection
+langdetect>=1.0.9                   # auto language detection (chunks)
 
 # --- Agent orchestration ---
 langgraph>=0.1.16
