@@ -8,6 +8,11 @@ from src.config import get_settings
 from src.embeddings.base import Embedder
 from src.embeddings.cache import EmbeddingCache
 from src.utils import get_logger
+import os
+import warnings
+# Supprimer les warnings HuggingFace non critiques
+warnings.filterwarnings("ignore", category=FutureWarning)
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 log = get_logger(__name__)
 
@@ -27,7 +32,7 @@ class BgeEmbedder(Embedder):
 
         log.info(f"Loading embedding model: {self._cfg.model_name} on {self._cfg.device}")
         self.model = SentenceTransformer(self._cfg.model_name, device=self._cfg.device)
-        self.dimension = self.model.get_sentence_embedding_dimension()
+        self.dimension = self.model.get_embedding_dimension()
 
         self.cache: EmbeddingCache | None = None
         if use_cache:

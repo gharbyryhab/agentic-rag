@@ -20,16 +20,22 @@ log = get_logger("query")
 
 
 def _print_result(result: dict) -> None:
+    from pathlib import Path
+    
     print("\n" + "=" * 70)
-    print("ANSWER")
+    print("RÉPONSE")
     print("=" * 70)
     print(result["answer"])
-    print("\n" + "-" * 70)
-    print(f"SOURCES ({len(result['sources'])})")
-    print("-" * 70)
-    for i, s in enumerate(result["sources"], 1):
-        print(f"{i}. [{s['score']:.3f}] {s['source']}")
-        print(f"   {s['snippet']}…")
+    
+    if result["sources"]:
+        print("\n" + "-" * 70)
+        print(f"SOURCES ({len(result['sources'])})")
+        print("-" * 70)
+        for i, s in enumerate(result["sources"], 1):
+            # Afficher seulement le nom du fichier, pas le chemin complet
+            source_name = Path(s['source']).name
+            print(f"{i}. [{s['score']:.3f}] {source_name}")
+            print(f"   {s['snippet'][:120]}...")
     print("=" * 70 + "\n")
 
 
