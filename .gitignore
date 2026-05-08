@@ -56,10 +56,27 @@ models/
 .ipynb_checkpoints/
 
 
-# Ghaya personal files : 
+# --- Résultats générés (pas versionnés) ---
+results/benchmark/*
+results/metadata/*
+!results/benchmark/.gitkeep
+!results/metadata/.gitkeep
+
+# --- Fichiers personnels temporaires ---
 br.txt
 output.txt
-/scripts/benchmark/
-/scripts/classify_books.py
-/scripts/test_gemini.py
-/data/*.json
+
+# --- Données générées ---
+data/*.json
+data/books_metadata.json
+
+# --- Résultats de benchmarks (générés, pas versionnés) ---
+results/
+!results/.gitkeep
+
+
+
+# --- NE PAS ignorer ces dossiers importants ---
+# scripts/benchmark/ → maintenant dans tools/benchmark/ donc ligne obsolète
+# scripts/classify_books.py → garder, c'est un script utilisateur
+# scripts/test_gemini.py → déplacer dans tools/ puis ignorer l'ancien
