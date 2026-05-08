@@ -25,6 +25,8 @@ class PathsConfig(BaseModel):
     vector_store: str
     embedding_cache: str
     logs: str
+    bm25_store: str = "vector_store/bm25"
+    books_metadata: str = "results/metadata/books_metadata.json"
 
 
 class EmbeddingsConfig(BaseModel):
@@ -37,10 +39,33 @@ class EmbeddingsConfig(BaseModel):
 
 
 class ChunkingConfig(BaseModel):
-    strategy: str = "recursive"
-    chunk_size: int = 800
-    chunk_overlap: int = 120
+    strategy: str = "recursive"          # semantic | recursive
+    chunk_size: int = 1500
+    chunk_overlap: int = 150
     separators: list[str] = Field(default_factory=lambda: ["\n\n", "\n", " ", ""])
+    # Semantic chunker params (used only when strategy == "semantic")
+    semantic_breakpoint_type: str = "percentile"
+    semantic_breakpoint_amount: float = 95.0
+    semantic_buffer_size: int = 1
+    # Post-processing (any strategy)
+    min_chunk_chars: int = 200
+    max_chunk_chars: int = 2000
+
+
+class FiltersConfig(BaseModel):
+    enable_pathological_filter: bool = True
+    min_alpha_ratio: float = 0.5
+    min_vocab_diversity: float = 0.3
+    enable_dedup: bool = True
+    dedup_jaccard_threshold: float = 0.85
+    dedup_num_perm: int = 128
+
+
+class HeaderFooterConfig(BaseModel):
+    enable: bool = True
+    occurrence_ratio: float = 0.3
+    scan_first_lines: int = 3
+    scan_last_lines: int = 3
 
 
 class VectorStoreConfig(BaseModel):
@@ -93,6 +118,8 @@ class Settings(BaseSettings):
     paths: PathsConfig
     embeddings: EmbeddingsConfig
     chunking: ChunkingConfig
+    filters: FiltersConfig = Field(default_factory=FiltersConfig)
+    header_footer: HeaderFooterConfig = Field(default_factory=HeaderFooterConfig)
     vector_store: VectorStoreConfig
     retrieval: RetrievalConfig
     llm: LLMConfig
