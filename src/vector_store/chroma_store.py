@@ -66,27 +66,35 @@ class ChromaStore(VectorStore):
         query_embedding: np.ndarray,
         top_k: int = 5,
         where: dict[str, Any] | None = None,
+        include_embeddings: bool = False,
     ) -> list[SearchResult]:
+        include = ["documents", "metadatas", "distances"]
+        if include_embeddings:
+            include.append("embeddings")
         result = self.collection.query(
             query_embeddings=[query_embedding.tolist()],
             n_results=top_k,
             where=where,
+            include=include,
         )
         ids = result["ids"][0]
         docs = result["documents"][0]
         metas = result["metadatas"][0] or [{}] * len(ids)
-        # Chroma returns distances (lower = closer for cosine). Convert to similarity.
         dists = result["distances"][0] if result.get("distances") else [0.0] * len(ids)
+        embs = result["embeddings"][0] if include_embeddings and result.get("embeddings") else [None] * len(ids)
 
-        return [
-            SearchResult(
-                id=i,
-                text=d,
-                score=1.0 - dist,
-                metadata=m or {},
+        results = []
+        for i, d, m, dist, emb in zip(ids, docs, metas, dists, embs):
+            results.append(
+                SearchResult(
+                    id=i,
+                    text=d,
+                    score=1.0 - dist,
+                    metadata=m or {},
+                    embedding=np.asarray(emb, dtype=np.float32) if emb is not None else None,
+                )
             )
-            for i, d, m, dist in zip(ids, docs, metas, dists)
-        ]
+        return results
 
     def count(self) -> int:
         return self.collection.count()

@@ -64,13 +64,31 @@ vector_store:
   persist_directory: vector_store/chroma
   distance: cosine
 
-# ---------- Retrieval ----------
+# ---------- Retrieval (Phase II : hybrid + MMR + reranker) ----------
 retrieval:
-  top_k: 5
-  score_threshold: 0.5
-  use_mmr: true             # Maximal Marginal Relevance pour la diversité
-  mmr_lambda: 0.5
-  fetch_k: 20               # candidats avant re-ranking MMR
+  top_k: 5                       # final number of chunks fed to LLM
+  fetch_k: 30                    # candidates fetched from each retriever before fusion
+  score_threshold: 0.0           # min score to consider (cosine sim space)
+
+  # Hybrid search (dense Chroma + sparse BM25) ──────────────────────
+  hybrid:
+    enable: true
+    dense_weight: 1.0            # used for weighted-rank fallback (not RRF)
+    sparse_weight: 1.0
+    rrf_k: 60                    # Reciprocal Rank Fusion constant (Cormack 2009)
+
+  # MMR diversification (cosine-based) ─────────────────────────────
+  mmr:
+    enable: true
+    lambda_mult: 0.6             # ↑ relevance ↓ diversity (1.0 = pure relevance)
+    candidates_after_mmr: 15     # kept before reranking
+
+  # CrossEncoder reranker ──────────────────────────────────────────
+  reranker:
+    enable: true
+    model: cross-encoder/ms-marco-MiniLM-L-6-v2   # 22 M params, fast on CPU
+    device: cpu
+    batch_size: 32
 
 # ---------- LLM (Gemini) ----------
 llm:
@@ -80,9 +98,27 @@ llm:
   max_output_tokens: 2048
   top_p: 0.95
 
-# ---------- Agent ----------
+# ---------- Agent (Phase III : router + CRAG-light + ReAct tool-using) ----------
 agent:
   max_iterations: 6
   enable_query_rewriting: true
-  enable_grading: true            # filtre les chunks non pertinents avant generation
+  enable_grading: true
   verbose: true
+  # Router : decides between fast CRAG path and ReAct tool-using path
+  enable_router: true
+  router_default: simple          # simple | agent  (fallback when router fails)
+  # ReAct tool-using agent
+  react:
+    max_tool_calls: 5             # hard cap on tool invocations per question
+
+# ---------- Evaluation (Phase IV : Ragas) ----------
+evaluation:
+  testset_path: results/eval/testset.json
+  results_dir: results/eval
+  testset_size: 50                # default Q/A count
+  judge_model: gemini-2.5-flash   # fast cheap judge, not the answering LLM
+  metrics:
+    - faithfulness
+    - answer_relevancy
+    - context_precision
+    - context_recall

@@ -56,7 +56,8 @@ def main() -> int:
     log.info("=" * 50)
     log.info(f"Documents loaded : {stats['docs']}")
     log.info(f"Chunks produced  : {stats['chunks']}")
-    log.info(f"Vectors in store : {stats['indexed']}")
+    log.info(f"Vectors in Chroma: {stats['indexed']}")
+    log.info(f"BM25 entries     : {stats.get('bm25_indexed', 'N/A')}")
     log.info("=" * 50)
     return 0
 
