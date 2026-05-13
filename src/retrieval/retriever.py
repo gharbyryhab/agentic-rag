@@ -1,24 +1,55 @@
-"""Dense retriever combining an Embedder + a VectorStore, with optional MMR."""
+"""Hybrid + diversified + reranked retriever.
+
+Pipeline :
+
+    query
+      │
+      ├──► dense (Chroma, with embeddings)   ─┐
+      └──► sparse (BM25)                      ├──► RRF fusion
+                                              │
+                                              ▼
+                                      MMR (cosine, diverse)
+                                              │
+                                              ▼
+                                  CrossEncoder rerank
+                                              │
+                                              ▼
+                                          top_k chunks
+
+Each stage is independently toggleable via config/config.yaml.
+"""
 from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-
 from src.config import get_settings
 from src.embeddings import Embedder
+from src.retrieval.hybrid import reciprocal_rank_fusion
+from src.retrieval.mmr import mmr
+from src.retrieval.rerank import get_reranker
 from src.utils import get_logger
-from src.vector_store import VectorStore
+from src.vector_store import BM25Store, ChromaStore
 from src.vector_store.base import SearchResult
 
 log = get_logger(__name__)
 
 
 class Retriever:
-    def __init__(self, embedder: Embedder, store: VectorStore) -> None:
+    """Orchestrates dense + sparse retrieval, MMR, and reranking."""
+
+    def __init__(
+        self,
+        embedder: Embedder,
+        store: ChromaStore,
+        bm25: BM25Store | None = None,
+    ) -> None:
         self.embedder = embedder
         self.store = store
+        self.bm25 = bm25
         self._cfg = get_settings().retrieval
+        self._reranker = None  # lazy-loaded
+
+    # ---------------- Public API ----------------
 
     def retrieve(
         self,
@@ -27,59 +58,57 @@ class Retriever:
         where: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
         top_k = top_k or self._cfg.top_k
+        fetch_k = self._cfg.fetch_k
+
+        # ---- 1) Dense (Chroma) ----
         q_vec = self.embedder.embed_query(query)
+        need_embeddings = self._cfg.mmr.enable
+        dense = self.store.search(
+            q_vec,
+            top_k=fetch_k,
+            where=where,
+            include_embeddings=need_embeddings,
+        )
+        log.debug(f"Dense: {len(dense)} candidates")
 
-        if not self._cfg.use_mmr:
-            return self.store.search(q_vec, top_k=top_k, where=where)
+        # ---- 2) Sparse (BM25) — optional ----
+        candidates: list[SearchResult]
+        if self._cfg.hybrid.enable and self.bm25 is not None and self.bm25.count() > 0:
+            sparse = self.bm25.search(query, top_k=fetch_k)
+            log.debug(f"Sparse: {len(sparse)} candidates")
+            candidates = reciprocal_rank_fusion(
+                [dense, sparse],
+                k=self._cfg.hybrid.rrf_k,
+                top_k=fetch_k,
+            )
+            log.debug(f"RRF-fused: {len(candidates)} candidates")
+        else:
+            candidates = dense
 
-        # MMR : fetch more candidates, then rerank for diversity
-        candidates = self.store.search(q_vec, top_k=self._cfg.fetch_k, where=where)
-        return self._mmr(q_vec, candidates, top_k, self._cfg.mmr_lambda)
+        # Optional score-threshold cut (cosine sim space, ignored if RRF used)
+        if self._cfg.score_threshold > 0 and not (
+            self._cfg.hybrid.enable and self.bm25 and self.bm25.count() > 0
+        ):
+            candidates = [c for c in candidates if c.score >= self._cfg.score_threshold]
 
-    # ---------- MMR ----------
-    @staticmethod
-    def _mmr(
-        query_vec: np.ndarray,
-        candidates: list[SearchResult],
-        top_k: int,
-        lambda_mult: float,
-    ) -> list[SearchResult]:
-        """
-        Maximal Marginal Relevance — picks results that are both relevant
-        to the query AND diverse from already-picked results.
-        """
-        if not candidates:
-            return []
+        # ---- 3) MMR diversification ----
+        if self._cfg.mmr.enable and candidates:
+            n_after_mmr = min(self._cfg.mmr.candidates_after_mmr, len(candidates))
+            candidates = mmr(
+                q_vec,
+                candidates,
+                top_k=n_after_mmr,
+                lambda_mult=self._cfg.mmr.lambda_mult,
+            )
+            log.debug(f"MMR : {len(candidates)} candidates")
 
-        # Approximate candidate vectors from their similarity scores ; here
-        # we don't have raw vectors back from Chroma, so we re-rank using
-        # text-overlap as a cheap diversity proxy.
-        # NOTE : for true MMR, store vectors alongside results — left as TODO.
-        selected: list[SearchResult] = []
-        remaining = list(candidates)
+        # ---- 4) CrossEncoder rerank ----
+        if self._cfg.reranker.enable and candidates:
+            if self._reranker is None:
+                self._reranker = get_reranker()
+            candidates = self._reranker.rerank(query, candidates, top_k=top_k)
+            log.debug(f"Reranked : {len(candidates)} final")
+        else:
+            candidates = candidates[:top_k]
 
-        while remaining and len(selected) < top_k:
-            if not selected:
-                selected.append(remaining.pop(0))
-                continue
-
-            best_idx, best_score = 0, -1e9
-            for i, cand in enumerate(remaining):
-                relevance = cand.score
-                diversity_penalty = max(
-                    _token_overlap(cand.text, s.text) for s in selected
-                )
-                score = lambda_mult * relevance - (1 - lambda_mult) * diversity_penalty
-                if score > best_score:
-                    best_score, best_idx = score, i
-            selected.append(remaining.pop(best_idx))
-
-        return selected
-
-
-def _token_overlap(a: str, b: str) -> float:
-    sa = set(a.lower().split())
-    sb = set(b.lower().split())
-    if not sa or not sb:
-        return 0.0
-    return len(sa & sb) / len(sa | sb)
+        return candidates

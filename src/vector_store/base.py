@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -13,7 +13,8 @@ class SearchResult:
     id: str
     text: str
     score: float
-    metadata: dict[str, Any]
+    metadata: dict[str, Any] = field(default_factory=dict)
+    embedding: np.ndarray | None = None  # populated by stores supporting embedding return
 
 
 class VectorStore(ABC):
@@ -32,6 +33,7 @@ class VectorStore(ABC):
         query_embedding: np.ndarray,
         top_k: int = 5,
         where: dict[str, Any] | None = None,
+        include_embeddings: bool = False,
     ) -> list[SearchResult]: ...
 
     @abstractmethod
