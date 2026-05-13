@@ -75,12 +75,36 @@ class VectorStoreConfig(BaseModel):
     distance: str = "cosine"
 
 
+class HybridConfig(BaseModel):
+    enable: bool = True
+    dense_weight: float = 1.0
+    sparse_weight: float = 1.0
+    rrf_k: int = 60
+
+
+class MMRConfig(BaseModel):
+    enable: bool = True
+    lambda_mult: float = 0.6
+    candidates_after_mmr: int = 15
+
+
+class RerankerConfig(BaseModel):
+    enable: bool = True
+    model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    device: str = "cpu"
+    batch_size: int = 32
+
+
 class RetrievalConfig(BaseModel):
     top_k: int = 5
+    fetch_k: int = 30
     score_threshold: float = 0.0
+    hybrid: HybridConfig = Field(default_factory=HybridConfig)
+    mmr: MMRConfig = Field(default_factory=MMRConfig)
+    reranker: RerankerConfig = Field(default_factory=RerankerConfig)
+    # Legacy compatibility (read by older code paths)
     use_mmr: bool = True
     mmr_lambda: float = 0.5
-    fetch_k: int = 20
 
 
 class LLMConfig(BaseModel):
@@ -91,11 +115,33 @@ class LLMConfig(BaseModel):
     top_p: float = 0.95
 
 
+class ReActConfig(BaseModel):
+    max_tool_calls: int = 5
+
+
 class AgentConfig(BaseModel):
     max_iterations: int = 6
     enable_query_rewriting: bool = True
     enable_grading: bool = True
     verbose: bool = True
+    enable_router: bool = True
+    router_default: str = "simple"
+    react: ReActConfig = Field(default_factory=ReActConfig)
+
+
+class EvaluationConfig(BaseModel):
+    testset_path: str = "results/eval/testset.json"
+    results_dir: str = "results/eval"
+    testset_size: int = 50
+    judge_model: str = "gemini-2.5-flash"
+    metrics: list[str] = Field(
+        default_factory=lambda: [
+            "faithfulness",
+            "answer_relevancy",
+            "context_precision",
+            "context_recall",
+        ]
+    )
 
 
 # ---------- Root settings ----------
@@ -124,6 +170,7 @@ class Settings(BaseSettings):
     retrieval: RetrievalConfig
     llm: LLMConfig
     agent: AgentConfig
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
 
     # Project root (for resolving relative paths)
     root_dir: Path = ROOT_DIR
