@@ -1,35 +1,29 @@
-"""LangGraph-based Agentic RAG.
+"""Unified Agentic RAG : Router → (CRAG-light | ReAct).
 
-Graph topology:
+Graph for the SIMPLE path (default, fast) :
 
     START
       │
       ▼
-    rewrite ──(if enabled)──► retrieve ──► grade ──► decide
-                                                         │
-                              ┌──────────────────────────┤
-                              ▼                          ▼
-                          generate                   rewrite_again
-                              │                          │
-                              ▼                          ▼
-                             END                     retrieve
+    rewrite ──► retrieve ──► grade ──► generate ──► END
 
-Behaviour:
-- `rewrite` reformulates the user question using chat history (Multi-Query / HyDE-lite).
-- `retrieve` calls the dense retriever (Embedder + ChromaDB).
-- `grade` filters out chunks judged irrelevant by Gemini.
-- If too few relevant chunks remain, the agent rewrites the query once more (CRAG-style).
-- `generate` produces the final answer with citations.
+Graph for the AGENT path (multi-step, tool-using) :
+
+    START ──► react_agent ──► END
+
+The top-level `RagAgent.run()` invokes the router, then dispatches to one
+of the two sub-pipelines. Conversation memory is shared.
 """
 from __future__ import annotations
 
 from typing import Any, TypedDict
 
-from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 from src.agents.base_agent import BaseAgent
 from src.agents.memory import ConversationMemory
+from src.agents.react_agent import ReActAgent
+from src.agents.router import QueryRouter
 from src.config import get_prompts, get_settings
 from src.llm import GeminiClient
 from src.retrieval import Retriever
@@ -39,7 +33,8 @@ from src.vector_store.base import SearchResult
 log = get_logger(__name__)
 
 
-# ---------- Graph state ----------
+# ------------ State for the CRAG-light sub-graph ------------
+
 class RagState(TypedDict, total=False):
     question: str
     rewritten_question: str
@@ -50,7 +45,8 @@ class RagState(TypedDict, total=False):
     trace: list[dict[str, Any]]
 
 
-# ---------- Agent ----------
+# ------------ Main agent ------------
+
 class RagAgent(BaseAgent):
     def __init__(
         self,
@@ -63,43 +59,65 @@ class RagAgent(BaseAgent):
         self.memory = memory or ConversationMemory()
         self.cfg = get_settings().agent
         self.prompts = get_prompts()
-        self.graph = self._build_graph()
+
+        # Components
+        self.router = QueryRouter(llm)
+        self.simple_graph = self._build_simple_graph()
+        self.react_agent = ReActAgent(retriever, llm)
 
     # ---------- Public ----------
+
     def run(self, question: str, **kwargs: Any) -> dict[str, Any]:
         self.memory.add_user(question)
 
+        # 1) Route
+        route = self.router.route(question)
+        log.info(f"Routing → {route}")
+
+        # 2) Dispatch
+        if route == "agent":
+            result = self.react_agent.run(question)
+            result["route"] = "agent"
+        else:
+            result = self._run_simple(question)
+            result["route"] = "simple"
+
+        self.memory.add_assistant(result.get("answer", ""))
+        return result
+
+    # ---------- Simple (CRAG-light) ----------
+
+    def _run_simple(self, question: str) -> dict[str, Any]:
         initial: RagState = {
             "question": question,
             "rewritten_question": question,
             "iterations": 0,
             "trace": [],
         }
-        final: RagState = self.graph.invoke(initial)
-
-        answer = final.get("answer", "")
-        self.memory.add_assistant(answer)
+        final: RagState = self.simple_graph.invoke(initial)
 
         sources = [
             {
                 "id": d.id,
                 "source": d.metadata.get("source", d.id),
+                "book_title": d.metadata.get("book_title", ""),
+                "page": d.metadata.get("page", ""),
                 "score": d.score,
-                "snippet": d.text[:200],
+                "snippet": d.text[:300],
             }
             for d in final.get("relevant_documents", [])
         ]
         return {
-            "answer": answer,
+            "answer": final.get("answer", ""),
             "sources": sources,
             "trace": final.get("trace", []),
             "iterations": final.get("iterations", 0),
         }
 
-    # ---------- Graph construction ----------
-    def _build_graph(self):
-        g = StateGraph(RagState)
+    # ---------- Graph construction (CRAG-light) ----------
 
+    def _build_simple_graph(self):
+        g = StateGraph(RagState)
         g.add_node("rewrite", self._node_rewrite)
         g.add_node("retrieve", self._node_retrieve)
         g.add_node("grade", self._node_grade)
@@ -118,115 +136,32 @@ class RagAgent(BaseAgent):
             {"generate": "generate", "rewrite": "rewrite", "stop": "generate"},
         )
         g.add_edge("generate", END)
-
         return g.compile()
 
     # ---------- Nodes ----------
-    # def _node_rewrite(self, state: RagState) -> RagState:
-    #     # Only reformulate when there's a real conversation context :
-    #     # at least one prior assistant turn. Without that, the query is
-    #     # already standalone and reformulating is a wasted LLM call.
-    #     history_turns = self.memory.history()
-    #     has_prior_assistant = any(t["role"] == "assistant" for t in history_turns)
-
-    #     if not has_prior_assistant:
-    #         return {
-    #             "rewritten_question": state["question"],
-    #             "trace": state.get("trace", []) + [{"node": "rewrite", "skipped": "first turn"}],
-    #         }
-
-    #     # Build history without the current user question (last entry)
-    #     prior = history_turns[:-1] if history_turns and history_turns[-1]["role"] == "user" else history_turns
-    #     history_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in prior)
-
-    #     system = self.prompts["reformulate_system"]
-    #     user = f"Conversation history:\n{history_text}\n\nNew question: {state['question']}"
-    #     try:
-    #         rewritten = self.llm.generate(user, system=system).strip()
-    #     except Exception as e:  # noqa: BLE001
-    #         log.warning(f"Rewrite failed, falling back to original question: {e}")
-    #         rewritten = state["question"]
-    #     log.debug(f"Rewritten: {rewritten}")
-    #     return {
-    #         "rewritten_question": rewritten,
-    #         "trace": state.get("trace", []) + [{"node": "rewrite", "output": rewritten}],
-    #     }
-    # def _node_rewrite(self, state: RagState) -> RagState:
-    #     history_turns = self.memory.history()
-    #     has_prior_assistant = any(t["role"] == "assistant" for t in history_turns)
-
-    #     if not has_prior_assistant:
-    #         return {
-    #             "rewritten_question": state["question"],
-    #             "documents": [],            # ← AJOUT : reset
-    #             "relevant_documents": [],   # ← AJOUT : reset
-    #             "trace": state.get("trace", []) + [{"node": "rewrite", "skipped": "first turn"}],
-    #         }
-
-    #     prior = history_turns[:-1] if history_turns and history_turns[-1]["role"] == "user" else history_turns
-    #     history_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in prior)
-
-    #     system = self.prompts["reformulate_system"]
-    #     user = f"Conversation history:\n{history_text}\n\nNew question: {state['question']}"
-    #     try:
-    #         rewritten = self.llm.generate(user, system=system).strip()
-    #         log.info(f"Rewrite: '{state['question']}' → '{rewritten}'")
-    #     except Exception as e:
-    #         log.warning(f"Rewrite failed, falling back: {e}")
-    #         rewritten = state["question"]
-
-    #     return {
-    #         "rewritten_question": rewritten,
-    #         "documents": [],            # ← AJOUT : reset les docs du tour précédent
-    #         "relevant_documents": [],   # ← AJOUT : reset
-    #         "trace": state.get("trace", []) + [{"node": "rewrite", "output": rewritten}],
-    #     }
 
     def _node_rewrite(self, state: RagState) -> RagState:
-        history_turns = self.memory.history()
-        has_prior_assistant = any(t["role"] == "assistant" for t in history_turns)
-
+        history = self.memory.history()
+        has_prior_assistant = any(t["role"] == "assistant" for t in history)
         if not has_prior_assistant:
             return {
                 "rewritten_question": state["question"],
-                "documents": [],
-                "relevant_documents": [],
                 "trace": state.get("trace", []) + [{"node": "rewrite", "skipped": "first turn"}],
             }
 
-        prior = history_turns[:-1] if history_turns and history_turns[-1]["role"] == "user" else history_turns
+        prior = history[:-1] if history and history[-1]["role"] == "user" else history
         history_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in prior)
 
         system = self.prompts["reformulate_system"]
-        user = f"Conversation history:\n{history_text}\n\nFollow-up question: {state['question']}\n\nRewritten standalone query:"
-        #                                                                                              ↑ guide le modèle
+        user = f"Conversation history:\n{history_text}\n\nNew question: {state['question']}"
         try:
             rewritten = self.llm.generate(user, system=system).strip()
-            
-            # ── NOUVEAU : vérifier que le rewrite a vraiment changé quelque chose ──
-            original = state["question"].strip().lower()
-            if rewritten.strip().lower() == original:
-                # Le modèle n'a pas reformulé → on construit manuellement
-                # On prend la dernière question USER de l'historique comme topic
-                last_user_q = next(
-                    (t["content"] for t in reversed(prior) if t["role"] == "user"),
-                    None
-                )
-                if last_user_q:
-                    rewritten = f"{state['question']} — {last_user_q}"
-                    log.warning(f"Rewrite unchanged, using fallback: '{rewritten}'")
-                
-            log.info(f"Rewrite: '{state['question']}' → '{rewritten}'")
-            
-        except Exception as e:
-            log.warning(f"Rewrite failed, falling back: {e}")
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Rewrite failed: {e}")
             rewritten = state["question"]
-
         return {
             "rewritten_question": rewritten,
-            "documents": [],
-            "relevant_documents": [],
-            "trace": state.get("trace", []) + [{"node": "rewrite", "output": rewritten}],
+            "trace": state.get("trace", []) + [{"node": "rewrite", "output": rewritten[:120]}],
         }
 
     def _node_retrieve(self, state: RagState) -> RagState:
@@ -245,14 +180,11 @@ class RagAgent(BaseAgent):
                 "relevant_documents": docs,
                 "trace": state.get("trace", []) + [{"node": "grade", "skipped": True}],
             }
-
         question = state.get("rewritten_question") or state["question"]
         keep: list[SearchResult] = []
         for d in docs:
-            verdict = self._grade_one(question, d.text)
-            if verdict:
+            if self._grade_one(question, d.text):
                 keep.append(d)
-
         log.info(f"Graded relevant: {len(keep)}/{len(docs)}")
         return {
             "relevant_documents": keep,
@@ -264,58 +196,41 @@ class RagAgent(BaseAgent):
     def _node_generate(self, state: RagState) -> RagState:
         docs = state.get("relevant_documents") or state.get("documents", [])
         question = state.get("rewritten_question") or state["question"]
-
         if not docs:
-            answer = (
-                "I could not find relevant information in the knowledge base "
-                "to answer this question reliably."
-            )
             return {
-                "answer": answer,
+                "answer": "I could not find relevant information in the knowledge base.",
                 "trace": state.get("trace", []) + [{"node": "generate", "no_context": True}],
             }
-
         context = "\n\n---\n\n".join(
-            f"[source: {d.metadata.get('source', d.id)}]\n{d.text}" for d in docs
+            f"[{d.metadata.get('book_title') or d.metadata.get('source', d.id)}"
+            + (f", p.{d.metadata.get('page')}" if d.metadata.get('page') else "")
+            + f"]\n{d.text}"
+            for d in docs
         )
         system = self.prompts["rag_system"]
         user = self.prompts["rag_user"].format(context=context, question=question)
-        try:
-            answer = self.llm.generate(user, system=system)
-        except Exception as e:
-            log.error(f"Generation failed: {e}")
-            answer = "Une erreur s'est produite lors de la génération. Réessaie."
+        answer = self.llm.generate(user, system=system)
         return {
             "answer": answer,
             "trace": state.get("trace", []) + [{"node": "generate", "answer_len": len(answer)}],
         }
 
-    # ---------- Helpers ----------
     def _grade_one(self, question: str, document: str) -> bool:
         system = self.prompts["grade_system"]
         user = self.prompts["grade_user"].format(document=document[:2000], question=question)
         try:
             verdict = self.llm.generate(user, system=system).strip().lower()
-            # Cherche "yes" n'importe où, pas seulement au début
-            has_yes = "yes" in verdict
-            has_no = "no" in verdict
-            if has_yes and not has_no:
-                return True
-            if has_no and not has_yes:
-                return False
-            # Ambiguë → garder le chunk (fail-safe)
+            return verdict.startswith("y")
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Grader failed, keeping doc by default: {e}")
             return True
-        except Exception as e:
-            log.warning(f"Grader failed, keeping doc: {e}")
-            return True  # fail-safe
 
     def _decide_after_grade(self, state: RagState) -> str:
         n_relevant = len(state.get("relevant_documents", []))
         iterations = state.get("iterations", 0)
-
         if n_relevant >= 1:
             return "generate"
         if iterations < 1:
             state["iterations"] = iterations + 1
             return "rewrite"
-        return "stop"  # → va vers "generate" avec docs vides → géré par le try/except
+        return "stop"
