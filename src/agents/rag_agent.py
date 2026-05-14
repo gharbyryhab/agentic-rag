@@ -175,9 +175,11 @@ class RagAgent(BaseAgent):
 
     def _node_grade(self, state: RagState) -> RagState:
         docs = state.get("documents", [])
+        new_iters = state.get("iterations", 0) + 1  # increment HERE (state is immutable elsewhere)
         if not self.cfg.enable_grading or not docs:
             return {
                 "relevant_documents": docs,
+                "iterations": new_iters,
                 "trace": state.get("trace", []) + [{"node": "grade", "skipped": True}],
             }
         question = state.get("rewritten_question") or state["question"]
@@ -185,11 +187,12 @@ class RagAgent(BaseAgent):
         for d in docs:
             if self._grade_one(question, d.text):
                 keep.append(d)
-        log.info(f"Graded relevant: {len(keep)}/{len(docs)}")
+        log.info(f"Graded relevant: {len(keep)}/{len(docs)} (iter {new_iters})")
         return {
             "relevant_documents": keep,
+            "iterations": new_iters,
             "trace": state.get("trace", []) + [
-                {"node": "grade", "kept": len(keep), "total": len(docs)}
+                {"node": "grade", "kept": len(keep), "total": len(docs), "iter": new_iters}
             ],
         }
 
@@ -226,11 +229,12 @@ class RagAgent(BaseAgent):
             return True
 
     def _decide_after_grade(self, state: RagState) -> str:
+        """Pure routing decision, no state mutation here (mutation lives in nodes)."""
         n_relevant = len(state.get("relevant_documents", []))
         iterations = state.get("iterations", 0)
+        max_iters = max(1, self.cfg.max_iterations // 3)  # ~2 retries by default
         if n_relevant >= 1:
             return "generate"
-        if iterations < 1:
-            state["iterations"] = iterations + 1
+        if iterations < max_iters:
             return "rewrite"
         return "stop"

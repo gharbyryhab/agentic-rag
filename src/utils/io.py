@@ -16,6 +16,33 @@ def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
+def extract_message_text(content: Any) -> str:
+    """
+    Extract clean text from a LangChain message content.
+
+    Handles three cases produced by various Gemini / Gemma models :
+      - str             → returned as is
+      - list of dicts   → blocks with `{type: "thinking"|"text", ...}`,
+                          we keep only the `text` blocks
+      - other           → str() fallback
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                # ignore "thinking" blocks
+            elif isinstance(block, str):
+                text_parts.append(block)
+        joined = "\n".join(t for t in text_parts if t).strip()
+        if joined:
+            return joined
+    return str(content)
+
+
 def ensure_dir(path: str | Path) -> Path:
     p = Path(path)
     p.mkdir(parents=True, exist_ok=True)
