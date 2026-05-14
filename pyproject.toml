@@ -2,7 +2,7 @@
 name = "agentic-rag"
 version = "0.1.0"
 description = "Agentic RAG system for data science / ML / AI knowledge base"
-authors = [{ name = "dali", email = "medalimraihi2018@gmail.com" }]
+authors = [{ name = "Rihab", email = "ryhabgharby01@gmail.com" }]
 requires-python = ">=3.10"
 
 [tool.ruff]

@@ -21,21 +21,37 @@ log = get_logger("query")
 
 def _print_result(result: dict) -> None:
     from pathlib import Path
-    
+
+    route = result.get("route", "")
     print("\n" + "=" * 70)
-    print("RÉPONSE")
+    print("RÉPONSE" + (f"  (route: {route})" if route else ""))
     print("=" * 70)
-    print(result["answer"])
-    
-    if result["sources"]:
+    print(result.get("answer", ""))
+
+    sources = result.get("sources") or []
+    if sources:
         print("\n" + "-" * 70)
-        print(f"SOURCES ({len(result['sources'])})")
+        print(f"SOURCES ({len(sources)})")
         print("-" * 70)
-        for i, s in enumerate(result["sources"], 1):
-            # Afficher seulement le nom du fichier, pas le chemin complet
-            source_name = Path(s['source']).name
-            print(f"{i}. [{s['score']:.3f}] {source_name}")
-            print(f"   {s['snippet'][:120]}...")
+        for i, s in enumerate(sources, 1):
+            # Pick the best display label available
+            label = s.get("book_title") or s.get("source") or s.get("id") or "?"
+            try:
+                label = Path(label).name if label else "?"
+            except Exception:  # noqa: BLE001
+                pass
+            page = s.get("page") or ""
+            page_str = f", p.{page}" if page else ""
+            score = s.get("score", 0.0)
+            try:
+                score_str = f"{float(score):.3f}"
+            except Exception:  # noqa: BLE001
+                score_str = "?"
+            snippet = s.get("snippet") or s.get("tool_output_excerpt") or ""
+            print(f"{i}. [{score_str}] {label}{page_str}")
+            print(f"   {snippet[:120]}...")
+    if result.get("tool_calls") is not None:
+        print(f"\n(tool calls : {result['tool_calls']})")
     print("=" * 70 + "\n")
 
 
