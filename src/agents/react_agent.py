@@ -15,6 +15,7 @@ from src.config import get_prompts, get_settings
 from src.llm import GeminiClient
 from src.retrieval import Retriever
 from src.utils import get_logger
+from src.utils.io import extract_message_text
 
 log = get_logger(__name__)
 
@@ -69,12 +70,20 @@ class ReActAgent:
                                     break
                         # Tool message → harvest sources
                         if getattr(m, "type", None) == "tool":
-                            text = getattr(m, "content", "")
-                            if isinstance(text, str):
-                                sources.append({"tool_output_excerpt": text[:300]})
-                        # Final AI answer
+                            tool_text = extract_message_text(getattr(m, "content", ""))
+                            tool_name = getattr(m, "name", "tool")
+                            sources.append(
+                                {
+                                    "source": f"<tool:{tool_name}>",
+                                    "book_title": tool_name,
+                                    "page": "",
+                                    "score": 0.0,
+                                    "snippet": tool_text[:300],
+                                }
+                            )
+                        # Final AI answer (extract clean text, dropping thinking blocks)
                         if getattr(m, "type", None) == "ai" and not getattr(m, "tool_calls", None):
-                            final_answer = m.content if isinstance(m.content, str) else str(m.content)
+                            final_answer = extract_message_text(m.content)
                 if tool_call_count > max_calls:
                     break
         except Exception as e:  # noqa: BLE001
