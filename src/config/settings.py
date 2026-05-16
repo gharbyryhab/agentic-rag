@@ -113,6 +113,11 @@ class LLMConfig(BaseModel):
     temperature: float = 0.2
     max_output_tokens: int = 2048
     top_p: float = 0.95
+    # Timeout (s) per request to the LLM provider. Prevents indefinite hangs
+    # when the API stalls (observed on long prompts / flaky network).
+    timeout: float = 60.0
+    # Max automatic retries on transient errors (network / 5xx / timeout).
+    max_retries: int = 2
 
 
 class ReActConfig(BaseModel):

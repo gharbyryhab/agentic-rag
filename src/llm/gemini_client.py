@@ -30,8 +30,16 @@ class GeminiClient(LLM):
             max_output_tokens=self._cfg.max_output_tokens,
             top_p=self._cfg.top_p,
             convert_system_message_to_human=False,
+            # Hard cap per-request: avoids the script hanging indefinitely
+            # when the Gemini endpoint stalls on a long prompt.
+            timeout=self._cfg.timeout,
+            # Retry transient errors (timeouts, 5xx, network blips) a few times.
+            max_retries=self._cfg.max_retries,
         )
-        log.info(f"Gemini client ready: {self._cfg.model_name}")
+        log.info(
+            f"Gemini client ready: {self._cfg.model_name} "
+            f"(timeout={self._cfg.timeout}s, max_retries={self._cfg.max_retries})"
+        )
 
     def _is_gemma3(self) -> bool:
         return "gemma-3" in self._cfg.model_name
