@@ -286,6 +286,19 @@ def _extract_retry_after(err_str: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
+# Markers of transient server-side errors we want to retry (vs hard failures
+# like 400 / 401 / 403 which mean "your request is wrong, retrying won't help").
+_TRANSIENT_MARKERS = (
+    "500", "502", "503", "504",
+    "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED",
+    "ServiceUnavailable", "InternalServerError",
+)
+
+
+def _is_transient(err_str: str) -> bool:
+    return any(m in err_str for m in _TRANSIENT_MARKERS)
+
+
 def _llm_generate_safe(llm: GeminiClient, prompt: str, max_retries: int = 4) -> str:
     for attempt in range(1, max_retries + 1):
         _rate_limiter.wait()
@@ -295,6 +308,8 @@ def _llm_generate_safe(llm: GeminiClient, prompt: str, max_retries: int = 4) -> 
             return result
         except Exception as e:
             err_str = str(e)
+
+            # ─── Rate limit (429) : honor server's retryDelay if present ───
             if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
                 retry_after = _extract_retry_after(err_str)
                 _rate_limiter.on_rate_limited(retry_after)
@@ -302,6 +317,20 @@ def _llm_generate_safe(llm: GeminiClient, prompt: str, max_retries: int = 4) -> 
                     log.warning(f"429 (tentative {attempt}/{max_retries}) → retry...")
                     continue
                 raise
+
+            # ─── Transient server errors (5xx) : exponential backoff ───
+            if _is_transient(err_str):
+                if attempt < max_retries:
+                    backoff = 2 ** attempt  # 2s, 4s, 8s, 16s
+                    log.warning(
+                        f"Transient API error (tentative {attempt}/{max_retries}) "
+                        f"→ sleep {backoff}s : {err_str[:120]}"
+                    )
+                    time.sleep(backoff)
+                    continue
+                raise
+
+            # ─── Hard failure (4xx other than 429, malformed request, etc.) ───
             raise
 
 
@@ -399,7 +428,11 @@ def main():
     for i, pdf_path in enumerate(pdf_files, 1):
         key = pdf_path.name  # clé = nom du fichier uniquement
 
-        if key in existing and not args.force:
+        # Resume only on SUCCESSFUL prior classifications. Errored entries
+        # (network failure, invalid JSON, etc.) must be retried, otherwise
+        # a network outage permanently corrupts the cache.
+        already_ok = key in existing and "error" not in existing[key]
+        if already_ok and not args.force:
             log.info(f"[{i}/{len(pdf_files)}] SKIP : {key[:65]}")
             continue
 

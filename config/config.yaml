@@ -28,7 +28,7 @@ embeddings:
 
 # ---------- Chunking ----------
 chunking:
-  strategy: semantic        # semantic | recursive
+  strategy: recursive        # semantic | recursive
   # --- Recursive params (fallback / post-processing) ---
   chunk_size: 1500
   chunk_overlap: 150
@@ -97,6 +97,8 @@ llm:
   temperature: 0.2
   max_output_tokens: 2048
   top_p: 0.95
+  timeout: 60          # s — abort hanging requests instead of waiting forever
+  max_retries: 2       # transient errors / 5xx / timeouts retried this many times
 
 # ---------- Agent (Phase III : router + CRAG-light + ReAct tool-using) ----------
 agent:
