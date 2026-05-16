@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 project:
   name: agentic-rag
   version: 0.1.0
@@ -117,3 +118,131 @@ evaluation:
   - answer_relevancy
   - context_precision
   - context_recall
+=======
+# ============================================================
+# Agentic RAG — Main configuration
+# ============================================================
+
+project:
+  name: agentic-rag
+  version: 0.1.0
+
+paths:
+  data_raw: data/raw
+  data_processed: data/processed
+  data_chunks: data/chunks
+  vector_store: vector_store/chroma
+  embedding_cache: vector_store/embedding_cache
+  bm25_store: vector_store/bm25
+  books_metadata: results/metadata/books_metadata.json
+  logs: logs
+
+# ---------- Embeddings ----------
+embeddings:
+  model_name: BAAI/bge-small-en-v1.5
+  device: cpu              # MX130 souvent plus lente que CPU — benchmarker avant de passer à "cuda"
+  normalize: true
+  batch_size: 32
+  # Préfixes recommandés par BAAI pour bge-*-en-v1.5
+  query_prefix: "Represent this sentence for searching relevant passages: "
+  passage_prefix: ""
+
+# ---------- Chunking ----------
+chunking:
+  strategy: recursive        # semantic | recursive
+  # --- Recursive params (fallback / post-processing) ---
+  chunk_size: 1500
+  chunk_overlap: 150
+  separators: ["\n\n## ", "\n\n### ", "\n\nChapter ", "\n\nSection ", "\n\n", "\n", ". ", " ", ""]
+  # --- Semantic params ---
+  semantic_breakpoint_type: percentile     # percentile | standard_deviation | interquartile
+  semantic_breakpoint_amount: 95.0
+  semantic_buffer_size: 1
+  # --- Post-processing (any strategy) ---
+  min_chunk_chars: 200
+  max_chunk_chars: 2000
+
+# ---------- Filters & deduplication ----------
+filters:
+  enable_pathological_filter: true
+  min_alpha_ratio: 0.5            # ≥ 50% alphabetic characters
+  min_vocab_diversity: 0.3        # vocab uniqueness ratio
+  enable_dedup: true
+  dedup_jaccard_threshold: 0.85   # MinHash-LSH near-duplicate threshold
+  dedup_num_perm: 128             # MinHash permutations (higher = more accurate)
+
+# ---------- Header / footer cleanup ----------
+header_footer:
+  enable: true
+  occurrence_ratio: 0.3           # remove lines appearing on >30% of pages
+  scan_first_lines: 3             # check first N lines of each page
+  scan_last_lines: 3              # check last N lines of each page
+
+# ---------- Vector store ----------
+vector_store:
+  provider: chroma
+  collection_name: ds_ml_kb
+  persist_directory: vector_store/chroma
+  distance: cosine
+
+# ---------- Retrieval (Phase II : hybrid + MMR + reranker) ----------
+retrieval:
+  top_k: 5                       # final number of chunks fed to LLM
+  fetch_k: 30                    # candidates fetched from each retriever before fusion
+  score_threshold: 0.0           # min score to consider (cosine sim space)
+
+  # Hybrid search (dense Chroma + sparse BM25) ──────────────────────
+  hybrid:
+    enable: true
+    dense_weight: 1.0            # used for weighted-rank fallback (not RRF)
+    sparse_weight: 1.0
+    rrf_k: 60                    # Reciprocal Rank Fusion constant (Cormack 2009)
+
+  # MMR diversification (cosine-based) ─────────────────────────────
+  mmr:
+    enable: true
+    lambda_mult: 0.6             # ↑ relevance ↓ diversity (1.0 = pure relevance)
+    candidates_after_mmr: 15     # kept before reranking
+
+  # CrossEncoder reranker ──────────────────────────────────────────
+  reranker:
+    enable: true
+    model: cross-encoder/ms-marco-MiniLM-L-6-v2   # 22 M params, fast on CPU
+    device: cpu
+    batch_size: 32
+
+# ---------- LLM (Gemini) ----------
+llm:
+  provider: gemini
+  model_name: gemma-4-26b-a4b-it    # gemini-1.5-pro pour plus de qualité
+  temperature: 0.2
+  max_output_tokens: 2048
+  top_p: 0.95
+  timeout: 60          # s — abort hanging requests instead of waiting forever
+  max_retries: 2       # transient errors / 5xx / timeouts retried this many times
+
+# ---------- Agent (Phase III : router + CRAG-light + ReAct tool-using) ----------
+agent:
+  max_iterations: 6
+  enable_query_rewriting: true
+  enable_grading: true
+  verbose: true
+  # Router : decides between fast CRAG path and ReAct tool-using path
+  enable_router: true
+  router_default: simple          # simple | agent  (fallback when router fails)
+  # ReAct tool-using agent
+  react:
+    max_tool_calls: 5             # hard cap on tool invocations per question
+
+# ---------- Evaluation (Phase IV : Ragas) ----------
+evaluation:
+  testset_path: results/eval/testset.json
+  results_dir: results/eval
+  testset_size: 50                # default Q/A count
+  judge_model: gemini-2.5-flash   # fast cheap judge, not the answering LLM
+  metrics:
+    - faithfulness
+    - answer_relevancy
+    - context_precision
+    - context_recall
+>>>>>>> origin/main

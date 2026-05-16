@@ -7,6 +7,7 @@ Steps :
      ContextPrecision, ContextRecall)
   4. Save raw + aggregated results to `results/eval/<tag>/`
 
+<<<<<<< HEAD
 Notes :
   - We use BGE LOCAL embeddings for Ragas (not Google Cloud) to avoid
     `models/text-embedding-004 NOT_FOUND` errors and stay free.
@@ -14,6 +15,8 @@ Notes :
   - Each metric is evaluated independently so a failure on one doesn't
     nuke the others.
 
+=======
+>>>>>>> origin/main
 Usage :
     python -m tools.eval.run_ragas
     python -m tools.eval.run_ragas --tag baseline-recursive
@@ -24,7 +27,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+<<<<<<< HEAD
 import threading
+=======
+>>>>>>> origin/main
 import time
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +45,7 @@ from src.utils import get_logger  # noqa: E402
 log = get_logger("run_ragas")
 
 
+<<<<<<< HEAD
 # ---------- Judge LLM + embeddings ----------
 
 class _GlobalRateLimiter:
@@ -140,6 +147,28 @@ def _build_judge_embeddings():
 
 # ---------- Metric selection ----------
 
+=======
+def _build_judge():
+    """Build the LLM judge + embeddings used by Ragas metrics."""
+    from langchain_google_genai import (
+        ChatGoogleGenerativeAI,
+        GoogleGenerativeAIEmbeddings,
+    )
+
+    cfg = get_settings()
+    judge = ChatGoogleGenerativeAI(
+        model=cfg.evaluation.judge_model,
+        google_api_key=cfg.gemini_api_key,
+        temperature=0,
+    )
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004",
+        google_api_key=cfg.gemini_api_key,
+    )
+    return judge, embeddings
+
+
+>>>>>>> origin/main
 def _select_metrics(names: list[str]):
     """Return Ragas metric objects matching the configured names."""
     from ragas.metrics import (
@@ -164,8 +193,11 @@ def _select_metrics(names: list[str]):
     return out
 
 
+<<<<<<< HEAD
 # ---------- Pipeline replay ----------
 
+=======
+>>>>>>> origin/main
 def run_pipeline_over_testset(testset: list[dict]) -> list[dict]:
     """Replay each question through the pipeline and gather answers + contexts."""
     pipeline = QueryPipeline()
@@ -182,12 +214,16 @@ def run_pipeline_over_testset(testset: list[dict]) -> list[dict]:
             result = {"answer": "", "sources": [], "trace": []}
         latency = time.time() - t0
 
+<<<<<<< HEAD
         # Extract a usable text per source. Different shapes between simple/agent paths.
         retrieved_contexts: list[str] = []
         for s in result.get("sources", []):
             text = s.get("snippet") or s.get("tool_output_excerpt") or ""
             if text and text.strip():
                 retrieved_contexts.append(text)
+=======
+        retrieved_contexts = [s.get("snippet") or s.get("tool_output_excerpt") or "" for s in result.get("sources", [])]
+>>>>>>> origin/main
         if not retrieved_contexts:
             retrieved_contexts = [""]  # Ragas needs non-empty list
 
@@ -205,6 +241,7 @@ def run_pipeline_over_testset(testset: list[dict]) -> list[dict]:
     return records
 
 
+<<<<<<< HEAD
 # ---------- Evaluation ----------
 
 def evaluate(records: list[dict]) -> dict:
@@ -217,10 +254,18 @@ def evaluate(records: list[dict]) -> dict:
     try:
         from datasets import Dataset
         from ragas import RunConfig, evaluate as ragas_evaluate
+=======
+def evaluate(records: list[dict]) -> dict:
+    """Run Ragas metrics over the records and return aggregated + per-row results."""
+    try:
+        from datasets import Dataset
+        from ragas import evaluate as ragas_evaluate
+>>>>>>> origin/main
     except ImportError as e:
         raise ImportError("`pip install ragas datasets` required.") from e
 
     cfg = get_settings()
+<<<<<<< HEAD
     metric_objs = _select_metrics(cfg.evaluation.metrics)
     if not metric_objs:
         raise RuntimeError("No valid Ragas metrics selected.")
@@ -305,6 +350,31 @@ def evaluate(records: list[dict]) -> dict:
 
 
 # ---------- Main ----------
+=======
+    metrics = _select_metrics(cfg.evaluation.metrics)
+    if not metrics:
+        raise RuntimeError("No valid Ragas metrics selected.")
+
+    judge, embeddings = _build_judge()
+
+    dataset = Dataset.from_list(records)
+    log.info(f"Running Ragas on {len(records)} samples with {len(metrics)} metrics…")
+    result = ragas_evaluate(
+        dataset=dataset,
+        metrics=metrics,
+        llm=judge,
+        embeddings=embeddings,
+        raise_exceptions=False,
+    )
+    df = result.to_pandas()
+    aggregated = {
+        m.name: float(df[m.name].mean(skipna=True))
+        for m in metrics
+        if m.name in df.columns
+    }
+    return {"aggregated": aggregated, "per_row": df.to_dict(orient="records")}
+
+>>>>>>> origin/main
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Ragas evaluation.")
@@ -346,10 +416,14 @@ def main() -> int:
     print(f"RAGAS RESULTS — {tag}")
     print("=" * 60)
     for k, v in metrics["aggregated"].items():
+<<<<<<< HEAD
         if v != v:  # NaN check
             print(f"  {k:<25} FAILED")
         else:
             print(f"  {k:<25} {v:.4f}")
+=======
+        print(f"  {k:<25} {v:.4f}")
+>>>>>>> origin/main
     print("=" * 60)
     print(f"Saved : {out_dir}")
     return 0

@@ -113,6 +113,15 @@ class LLMConfig(BaseModel):
     temperature: float = 0.2
     max_output_tokens: int = 2048
     top_p: float = 0.95
+    # Timeout (s) per request to the LLM provider. Prevents indefinite hangs
+    # when the API stalls (observed on long prompts / flaky network).
+    timeout: float = 60.0
+    # Max automatic retries on transient errors (network / 5xx / timeout).
+    max_retries: int = 2
+
+
+class ReActConfig(BaseModel):
+    max_tool_calls: int = 5
 
 
 class ReActConfig(BaseModel):
@@ -133,8 +142,12 @@ class EvaluationConfig(BaseModel):
     testset_path: str = "results/eval/testset.json"
     results_dir: str = "results/eval"
     testset_size: int = 50
+<<<<<<< HEAD
     judge_model: str = "gemini-3.1-flash-lite"
     judge_rpm: int = 12          # cap requests-per-minute on the judge
+=======
+    judge_model: str = "gemini-2.5-flash"
+>>>>>>> origin/main
     metrics: list[str] = Field(
         default_factory=lambda: [
             "faithfulness",

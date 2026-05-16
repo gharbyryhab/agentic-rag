@@ -145,6 +145,7 @@ def generate_simple(n: int, store: ChromaStore, llm: GeminiClient) -> list[dict]
 
 
 def generate_ragas(n: int, store: ChromaStore) -> list[dict]:
+<<<<<<< HEAD
     """Use Ragas TestsetGenerator (heavier, multiple question types).
 
     Uses LOCAL BGE embeddings to avoid Google Cloud quota / 404 errors.
@@ -154,6 +155,16 @@ def generate_ragas(n: int, store: ChromaStore) -> list[dict]:
         from langchain_core.documents import Document
         from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_huggingface import HuggingFaceEmbeddings
+=======
+    """Use Ragas TestsetGenerator (heavier, multiple question types)."""
+    try:
+        from datasets import Dataset
+        from langchain_core.documents import Document
+        from langchain_google_genai import (
+            ChatGoogleGenerativeAI,
+            GoogleGenerativeAIEmbeddings,
+        )
+>>>>>>> origin/main
         from ragas.testset.generator import TestsetGenerator
         from ragas.testset.evolutions import multi_context, reasoning, simple
     except ImportError as e:
@@ -180,10 +191,16 @@ def generate_ragas(n: int, store: ChromaStore) -> list[dict]:
         google_api_key=cfg.gemini_api_key,
         temperature=0,
     )
+<<<<<<< HEAD
     embeddings = HuggingFaceEmbeddings(
         model_name=cfg.embeddings.model_name,
         model_kwargs={"device": cfg.embeddings.device},
         encode_kwargs={"normalize_embeddings": cfg.embeddings.normalize},
+=======
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004",
+        google_api_key=cfg.gemini_api_key,
+>>>>>>> origin/main
     )
 
     generator = TestsetGenerator.from_langchain(
