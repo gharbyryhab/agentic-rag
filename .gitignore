@@ -40,6 +40,7 @@ data/chunks/*
 
 # --- Vector store & cache ---
 vector_store/chroma/
+vector_store/bm25/
 vector_store/embedding_cache/
 !vector_store/.gitkeep
 
