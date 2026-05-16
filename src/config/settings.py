@@ -133,7 +133,8 @@ class EvaluationConfig(BaseModel):
     testset_path: str = "results/eval/testset.json"
     results_dir: str = "results/eval"
     testset_size: int = 50
-    judge_model: str = "gemini-2.5-flash"
+    judge_model: str = "gemini-3.1-flash-lite"
+    judge_rpm: int = 12          # cap requests-per-minute on the judge
     metrics: list[str] = Field(
         default_factory=lambda: [
             "faithfulness",
