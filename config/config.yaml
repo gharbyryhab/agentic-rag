@@ -118,7 +118,7 @@ evaluation:
   testset_path: results/eval/testset.json
   results_dir: results/eval
   testset_size: 50                # default Q/A count
-  judge_model: gemini-2.5-flash   # fast cheap judge, not the answering LLM
+  judge_model: gemini-3.1-flash-lite   # fast cheap judge, not the answering LLM
   metrics:
     - faithfulness
     - answer_relevancy
