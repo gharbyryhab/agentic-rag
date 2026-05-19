@@ -118,7 +118,32 @@ evaluation:
   testset_path: results/eval/testset.json
   results_dir: results/eval
   testset_size: 50                # default Q/A count
-  judge_model: gemini-3.1-flash-lite   # fast cheap judge, not the answering LLM
+
+  # ─── Synthesizer (LLM used by --strategy ragas to generate the testset) ─────
+  # Different from the generator (Gemma) and the judge to avoid self-bias.
+  # Provider 'groq' + openai/gpt-oss-120b = excellent JSON quality + fast.
+  synthesizer:
+    provider: groq                       # groq | gemini
+    model: openai/gpt-oss-120b
+    rpm: 30                              # Groq free tier limit
+
+  # ─── Judge (LLM used by run_ragas.py to score answers) ─────────────────────
+  # Different from the synthesizer to avoid self-bias.
+  # Llama 70B = high-quality judgment, in line with Ragas best practices.
+  judge:
+    provider: groq                       # groq | gemini
+    model: llama-3.3-70b-versatile
+    rpm: 30                              # Groq free tier limit
+
+  # ─── Legacy fields (kept for backward compat — prefer judge/synthesizer above)
+  judge_model: llama-3.3-70b-versatile
+  judge_rpm: 30
+
+  # ─── Testset generation parameters ──────────────────────────────────────────
+  testset_gen:
+    multi_chunks_per_qa: 3        # nb chunks per Q/A for "multi" strategy (recommended: 2-4)
+    sample_factor: 3              # over-sampling factor : pool = testset_size × this
+
   metrics:
     - faithfulness
     - answer_relevancy

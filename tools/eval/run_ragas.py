@@ -66,18 +66,52 @@ def _build_judge_llm():
     through the limiter. This prevents the 429 quota storm we saw on the
     free tier of AI Studio.
     """
-    from langchain_google_genai import ChatGoogleGenerativeAI
     from ragas.llms import LangchainLLMWrapper
 
     cfg = get_settings()
-    limiter = _GlobalRateLimiter(rpm=cfg.evaluation.judge_rpm)
+    judge_cfg = cfg.evaluation.judge
+    limiter = _GlobalRateLimiter(rpm=judge_cfg.rpm)
+
+    if judge_cfg.provider == "groq":
+        # Groq path : Llama 3.3 70B Versatile (or similar) via langchain-groq
+        try:
+            from langchain_groq import ChatGroq
+        except ImportError as e:
+            raise ImportError("`pip install langchain-groq` required.") from e
+        if not cfg.groq_api_key:
+            raise RuntimeError(
+                "GROQ_API_KEY is missing. Set it in .env. "
+                "Get a free key at https://console.groq.com/keys"
+            )
+
+        class RateLimitedGroq(ChatGroq):
+            """Rate-limited ChatGroq : every .invoke / .ainvoke passes through
+            the global limiter so we stay under Groq's RPM cap."""
+
+            def _generate(self, messages, *, run_manager=None, stop=None, **kwargs):
+                limiter.acquire()
+                return super()._generate(messages, run_manager=run_manager, stop=stop, **kwargs)
+
+            async def _agenerate(self, messages, *, run_manager=None, stop=None, **kwargs):
+                limiter.acquire()
+                return await super()._agenerate(messages, run_manager=run_manager, stop=stop, **kwargs)
+
+        judge = RateLimitedGroq(
+            model=judge_cfg.model,
+            api_key=cfg.groq_api_key,
+            temperature=0,
+            max_tokens=1024,
+            timeout=120,
+        )
+        log.info(f"Judge LLM : groq/{judge_cfg.model} (rate-limited to {judge_cfg.rpm} RPM)")
+        return LangchainLLMWrapper(judge)
+
+    # ── Gemini fallback (legacy / backup path) ──────────────────────────────
+    from langchain_google_genai import ChatGoogleGenerativeAI
 
     class RateLimitedGemini(ChatGoogleGenerativeAI):
-        """
-        Rate-limited Gemini that ALSO emulates n>1 by calling the model
-        sequentially N times. Required because `gemini-3.1-flash-lite` and
-        other Lite variants reject candidate_count > 1.
-        """
+        """Rate-limited Gemini that ALSO emulates n>1 by calling the model
+        sequentially N times. Required because lite variants reject n>1."""
 
         def _generate(self, messages, *, run_manager=None, stop=None, **kwargs):
             from langchain_core.outputs import ChatResult
@@ -86,7 +120,6 @@ def _build_judge_llm():
             limiter.acquire()
             if n == 1:
                 return super()._generate(messages, run_manager=run_manager, stop=stop, **kwargs)
-            # Emulate multiple candidates via sequential calls
             gens = []
             first = super()._generate(messages, run_manager=run_manager, stop=stop, **kwargs)
             gens.extend(first.generations)
@@ -113,13 +146,13 @@ def _build_judge_llm():
             return ChatResult(generations=gens, llm_output=first.llm_output)
 
     judge = RateLimitedGemini(
-        model=cfg.evaluation.judge_model,
+        model=judge_cfg.model,
         google_api_key=cfg.gemini_api_key,
         temperature=0,
         max_output_tokens=1024,
         timeout=120,
     )
-    log.info(f"Judge LLM : {cfg.evaluation.judge_model} (rate-limited to {cfg.evaluation.judge_rpm} RPM)")
+    log.info(f"Judge LLM : gemini/{judge_cfg.model} (rate-limited to {judge_cfg.rpm} RPM)")
     return LangchainLLMWrapper(judge)
 
 
@@ -325,9 +358,42 @@ def main() -> int:
         testset = testset[: args.sample]
     log.info(f"Loaded {len(testset)} Q/A pairs from {testset_path.name}")
 
-    tag = args.tag or datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Build a self-documenting tag : <base>_<chunking_strategy>_<YYYYMMDD>_<HHMMSS>
+    # so successive runs never overwrite each other and the chunking strategy
+    # used is visible at a glance.
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    chunking_strategy = cfg.chunking.strategy
+    base = args.tag or "run"
+    tag = f"{base}_{chunking_strategy}_{timestamp}"
     out_dir = cfg.absolute_path(cfg.evaluation.results_dir) / tag
     out_dir.mkdir(parents=True, exist_ok=True)
+    log.info(f"Output directory : {out_dir}")
+
+    # Snapshot the active config so the run is fully reproducible later.
+    try:
+        import yaml as _yaml
+        config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+        with config_path.open("r", encoding="utf-8") as f:
+            full_config = _yaml.safe_load(f)
+        config_snapshot = {
+            section: full_config.get(section)
+            for section in ("chunking", "filters", "header_footer", "retrieval",
+                            "llm", "agent", "evaluation")
+            if section in full_config
+        }
+        config_snapshot["_meta"] = {
+            "tag": tag,
+            "base_tag": base,
+            "chunking_strategy": chunking_strategy,
+            "timestamp": timestamp,
+            "sample_size": len(testset),
+            "testset_source": str(testset_path.name),
+        }
+        with (out_dir / "config_snapshot.yaml").open("w", encoding="utf-8") as f:
+            _yaml.safe_dump(config_snapshot, f, sort_keys=False, default_flow_style=False)
+        log.info(f"Config snapshot saved to {out_dir / 'config_snapshot.yaml'}")
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"Could not save config snapshot: {e}")
 
     # 1) Run pipeline
     records = run_pipeline_over_testset(testset)

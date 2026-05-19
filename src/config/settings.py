@@ -134,12 +134,41 @@ class AgentConfig(BaseModel):
     react: ReActConfig = Field(default_factory=ReActConfig)
 
 
+class TestsetGenConfig(BaseModel):
+    """Parameters for testset generation strategies."""
+    multi_chunks_per_qa: int = 3      # nb chunks combined for "multi" strategy
+    sample_factor: int = 3            # over-sampling factor (target × this)
+
+
+class SynthesizerConfig(BaseModel):
+    """Synthesizer = LLM used to generate the testset (strategy=ragas).
+    Recommended provider: 'groq' with openai/gpt-oss-120b (excellent JSON quality)."""
+    provider: str = "groq"                   # groq | gemini
+    model: str = "openai/gpt-oss-120b"
+    rpm: int = 30                            # Groq free tier limit
+
+
+class JudgeConfig(BaseModel):
+    """Judge = LLM used by Ragas to score answers.
+    Recommended provider: 'groq' with llama-3.3-70b-versatile (high judgment quality)."""
+    provider: str = "groq"                   # groq | gemini
+    model: str = "llama-3.3-70b-versatile"
+    rpm: int = 30                            # Groq free tier limit
+
+
 class EvaluationConfig(BaseModel):
     testset_path: str = "results/eval/testset.json"
     results_dir: str = "results/eval"
     testset_size: int = 50
-    judge_model: str = "gemini-3.1-flash-lite"
-    judge_rpm: int = 12          # cap requests-per-minute on the judge
+
+    # Legacy fields (kept for backward compat, but prefer the new sub-models below)
+    judge_model: str = "llama-3.3-70b-versatile"
+    judge_rpm: int = 30
+
+    # New structured config (used by tools/eval/*.py)
+    synthesizer: SynthesizerConfig = Field(default_factory=SynthesizerConfig)
+    judge: JudgeConfig = Field(default_factory=JudgeConfig)
+    testset_gen: TestsetGenConfig = Field(default_factory=TestsetGenConfig)
 
     metrics: list[str] = Field(
         default_factory=lambda: [
@@ -163,6 +192,7 @@ class Settings(BaseSettings):
 
     # Secrets / env
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
+    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
     hf_token: str = Field(default="", alias="HF_TOKEN")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     env: str = Field(default="development", alias="ENV")
