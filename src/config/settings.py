@@ -138,14 +138,23 @@ class TestsetGenConfig(BaseModel):
     """Parameters for testset generation strategies."""
     multi_chunks_per_qa: int = 3      # nb chunks combined for "multi" strategy
     sample_factor: int = 3            # over-sampling factor (target × this)
+    # ─── Knowledge-graph cache (strategy=ragas) ──────────────────────────────
+    # When set, the KG built by Ragas is saved here after construction and can
+    # be reloaded via --reuse-kg to skip the expensive extraction phase
+    # (Opt 1 : -80% tokens on subsequent runs).
+    kg_cache_path: str = "results/eval/kg.json"
 
 
 class SynthesizerConfig(BaseModel):
     """Synthesizer = LLM used to generate the testset (strategy=ragas).
-    Recommended provider: 'groq' with openai/gpt-oss-120b (excellent JSON quality)."""
+    Recommended : 'groq' with openai/gpt-oss-120b — OpenAI-tuned for reliable
+    structured JSON outputs (Ragas extractors require strict JSON, and
+    llama-4-scout fails this consistency check). Compensate the 200K TPD/key
+    via multi-key rotation (GROQ_API_KEYS)."""
     provider: str = "groq"                   # groq | gemini
     model: str = "openai/gpt-oss-120b"
-    rpm: int = 30                            # Groq free tier limit
+    rpm: int = 30                            # Groq free tier RPM limit
+    tpm: int = 8000                          # Groq free tier TPM limit for gpt-oss-120b
 
 
 class JudgeConfig(BaseModel):
@@ -153,7 +162,8 @@ class JudgeConfig(BaseModel):
     Recommended provider: 'groq' with llama-3.3-70b-versatile (high judgment quality)."""
     provider: str = "groq"                   # groq | gemini
     model: str = "llama-3.3-70b-versatile"
-    rpm: int = 30                            # Groq free tier limit
+    rpm: int = 30                            # Groq free tier RPM limit
+    tpm: int = 12000                         # Groq free tier TPM limit (tokens/min)
 
 
 class EvaluationConfig(BaseModel):
@@ -193,9 +203,23 @@ class Settings(BaseSettings):
     # Secrets / env
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    # Optional comma-separated list of additional Groq keys for automatic
+    # rotation on TPD exhaustion. Example : GROQ_API_KEYS=gsk_a,gsk_b,gsk_c
+    groq_api_keys: str = Field(default="", alias="GROQ_API_KEYS")
     hf_token: str = Field(default="", alias="HF_TOKEN")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     env: str = Field(default="development", alias="ENV")
+
+    def get_groq_keys(self) -> list[str]:
+        """Return ALL configured Groq keys in order : GROQ_API_KEYS first, then
+        the fallback GROQ_API_KEY if not already in the list. Used by the
+        key-rotating client to walk down the list on TPD exhaustion."""
+        out: list[str] = []
+        if self.groq_api_keys:
+            out.extend(k.strip() for k in self.groq_api_keys.split(",") if k.strip())
+        if self.groq_api_key and self.groq_api_key.strip() not in out:
+            out.append(self.groq_api_key.strip())
+        return out
 
     # YAML config
     paths: PathsConfig

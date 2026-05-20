@@ -124,8 +124,13 @@ evaluation:
   # Provider 'groq' + openai/gpt-oss-120b = excellent JSON quality + fast.
   synthesizer:
     provider: groq                       # groq | gemini
+    # Reverted to openai/gpt-oss-120b : llama-4-scout was failing on Ragas's
+    # structured JSON outputs (OutputParserException on SummaryExtractor).
+    # gpt-oss-120b is OpenAI-tuned for structured outputs → reliable JSON.
+    # The TPD limit (200K/key) is now compensated by 4-key rotation → 800K total.
     model: openai/gpt-oss-120b
-    rpm: 30                              # Groq free tier limit
+    rpm: 30                              # Groq free tier RPM limit
+    tpm: 8000                            # Groq free tier TPM limit for gpt-oss-120b
 
   # ─── Judge (LLM used by run_ragas.py to score answers) ─────────────────────
   # Different from the synthesizer to avoid self-bias.
@@ -133,7 +138,8 @@ evaluation:
   judge:
     provider: groq                       # groq | gemini
     model: llama-3.3-70b-versatile
-    rpm: 30                              # Groq free tier limit
+    rpm: 30                              # Groq free tier RPM limit
+    tpm: 12000                           # Groq free tier TPM limit (tokens/min)
 
   # ─── Legacy fields (kept for backward compat — prefer judge/synthesizer above)
   judge_model: llama-3.3-70b-versatile
@@ -143,6 +149,9 @@ evaluation:
   testset_gen:
     multi_chunks_per_qa: 3        # nb chunks per Q/A for "multi" strategy (recommended: 2-4)
     sample_factor: 3              # over-sampling factor : pool = testset_size × this
+    # Where Ragas saves/loads its knowledge graph (Opt 1 KG cache)
+    # Reload with `--reuse-kg` to skip the costly KG extraction (~80% savings).
+    kg_cache_path: results/eval/kg.json
 
   metrics:
     - faithfulness
