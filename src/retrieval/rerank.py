@@ -28,7 +28,13 @@ class CrossEncoderReranker:
             raise ImportError(
                 "sentence-transformers is required for the reranker"
             ) from e
-        self._model = CrossEncoder(cfg.model, device=cfg.device)
+        try:
+            self._model = CrossEncoder(cfg.model, device=cfg.device, local_files_only=True)
+        except (OSError, ValueError) as e:
+            raise RuntimeError(
+                f"Reranker model '{cfg.model}' not found in local cache. "
+                "Run: python -m scripts.download_models"
+            ) from e
         self._batch_size = cfg.batch_size
 
     def rerank(

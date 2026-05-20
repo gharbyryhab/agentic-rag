@@ -4,7 +4,9 @@ from __future__ import annotations
 from typing import Any
 
 from src.agents import ConversationMemory, RagAgent
+from src.config import get_settings
 from src.embeddings import BgeEmbedder
+from src.eval.online_judge import OnlineJudge
 from src.llm import GeminiClient
 from src.retrieval import Retriever
 from src.utils import get_logger
@@ -29,10 +31,19 @@ class QueryPipeline:
             llm=self.llm,
             memory=self.memory,
         )
+        cfg = get_settings()
+        self.judge = OnlineJudge(self.llm) if cfg.online_eval.enabled else None
         log.info("Pipeline prêt.")
 
     def ask(self, question: str) -> dict[str, Any]:
-        return self.agent.run(question)
+        result = self.agent.run(question)
+        if self.judge:
+            self.judge.maybe_evaluate(
+                question,
+                result.get("answer", ""),
+                metadata={"route": result.get("route", "")},
+            )
+        return result
 
     def reset_history(self) -> None:
         self.memory.clear()

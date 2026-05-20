@@ -122,12 +122,14 @@ class LLMConfig(BaseModel):
 
 class ReActConfig(BaseModel):
     max_tool_calls: int = 5
+    timeout_s: float = 60.0  # wall-clock cap on the full graph.stream() call
 
 
 class AgentConfig(BaseModel):
     max_iterations: int = 6
     enable_query_rewriting: bool = True
     enable_grading: bool = True
+    enable_web_fallback: bool = True  # DuckDuckGo fallback when KB returns no relevant docs
     verbose: bool = True
     enable_router: bool = True
     router_default: str = "simple"
@@ -164,6 +166,12 @@ class JudgeConfig(BaseModel):
     model: str = "llama-3.3-70b-versatile"
     rpm: int = 30                            # Groq free tier RPM limit
     tpm: int = 12000                         # Groq free tier TPM limit (tokens/min)
+
+
+class OnlineEvalConfig(BaseModel):
+    enabled: bool = True
+    sample_rate: float = 0.15          # fraction of live questions to evaluate
+    log_path: str = "results/logs/runtime_quality.jsonl"
 
 
 class EvaluationConfig(BaseModel):
@@ -222,6 +230,7 @@ class Settings(BaseSettings):
         return out
 
     # YAML config
+    online_eval: OnlineEvalConfig = Field(default_factory=OnlineEvalConfig)
     paths: PathsConfig
     embeddings: EmbeddingsConfig
     chunking: ChunkingConfig

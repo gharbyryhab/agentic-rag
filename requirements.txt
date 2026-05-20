@@ -40,6 +40,7 @@ nltk>=3.8.1
 
 # --- Agent orchestration ---
 langgraph>=0.1.16
+ddgs>=9.0.0                          # DuckDuckGo web search fallback (renamed from duckduckgo_search)
 
 # --- Embeddings (local, CPU) ---
 sentence-transformers>=3.0.1

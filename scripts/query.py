@@ -10,6 +10,10 @@ import argparse
 import sys
 from pathlib import Path
 
+# Force UTF-8 output so book titles and snippets with non-ASCII chars print correctly.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 

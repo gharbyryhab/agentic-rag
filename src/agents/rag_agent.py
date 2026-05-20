@@ -40,6 +40,7 @@ class RagState(TypedDict, total=False):
     rewritten_question: str
     documents: list[SearchResult]
     relevant_documents: list[SearchResult]
+    web_results: list[str]   # DuckDuckGo snippets used when KB has no relevant docs
     answer: str
     iterations: int
     trace: list[dict[str, Any]]
@@ -70,21 +71,66 @@ class RagAgent(BaseAgent):
     def run(self, question: str, **kwargs: Any) -> dict[str, Any]:
         self.memory.add_user(question)
 
+        # 0) Answer from conversation memory when no retrieval is needed
+        prior = self.memory.history()[:-1]
+        if prior:
+            memory_answer = self._answer_from_memory(question, prior)
+            if memory_answer is not None:
+                log.info("Answered from conversation memory (no retrieval)")
+                self.memory.add_assistant(memory_answer)
+                return {
+                    "answer": memory_answer,
+                    "route": "memory",
+                    "sources": [],
+                    "trace": [{"node": "memory_check", "answered": True}],
+                }
+
         # 1) Route
         route = self.router.route(question)
         log.info(f"Routing → {route}")
 
-        # 2) Dispatch
+        # 2) Dispatch — each branch falls back to the other on failure
+        prior_history = self.memory.history()[:-1]  # exclude the current user turn
         if route == "agent":
-            prior_history = self.memory.history()[:-1]  # exclude the current user turn
-            result = self.react_agent.run(question, history=prior_history)
-            result["route"] = "agent"
+            try:
+                result = self.react_agent.run(question, history=prior_history)
+                result["route"] = "agent"
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"Agent route failed ({type(e).__name__}: {e}), falling back to simple")
+                result = self._run_simple(question)
+                result["route"] = "simple_fallback"
         else:
-            result = self._run_simple(question)
-            result["route"] = "simple"
+            try:
+                result = self._run_simple(question)
+                result["route"] = "simple"
+            except Exception as e:  # noqa: BLE001
+                log.warning(f"Simple route failed ({type(e).__name__}: {e}), falling back to agent")
+                result = self.react_agent.run(question, history=prior_history)
+                result["route"] = "agent_fallback"
 
         self.memory.add_assistant(result.get("answer", ""))
         return result
+
+    # ---------- Memory check ----------
+
+    def _answer_from_memory(self, question: str, history: list[dict]) -> str | None:
+        """Return an answer if the question can be resolved from conversation history alone.
+
+        Returns the answer string, or None if retrieval is needed.
+        """
+        history_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in history)
+        system = self.prompts["memory_check_system"]
+        user = self.prompts["memory_check_user"].format(
+            history=history_text, question=question
+        )
+        try:
+            response = self.llm.generate(user, system=system).strip()
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Memory check failed: {e}")
+            return None
+        if response.upper().startswith("MEMORY:"):
+            return response[len("MEMORY:"):].strip()
+        return None
 
     # ---------- Simple (CRAG-light) ----------
 
@@ -122,6 +168,7 @@ class RagAgent(BaseAgent):
         g.add_node("rewrite", self._node_rewrite)
         g.add_node("retrieve", self._node_retrieve)
         g.add_node("grade", self._node_grade)
+        g.add_node("web_fallback", self._node_web_fallback)
         g.add_node("generate", self._node_generate)
 
         if self.cfg.enable_query_rewriting:
@@ -134,8 +181,9 @@ class RagAgent(BaseAgent):
         g.add_conditional_edges(
             "grade",
             self._decide_after_grade,
-            {"generate": "generate", "rewrite": "rewrite", "stop": "generate"},
+            {"generate": "generate", "rewrite": "rewrite", "web_fallback": "web_fallback"},
         )
+        g.add_edge("web_fallback", "generate")
         g.add_edge("generate", END)
         return g.compile()
 
@@ -195,26 +243,57 @@ class RagAgent(BaseAgent):
             ],
         }
 
+    def _node_web_fallback(self, state: RagState) -> RagState:
+        if not self.cfg.enable_web_fallback:
+            return {
+                "web_results": [],
+                "trace": state.get("trace", []) + [{"node": "web_fallback", "skipped": True}],
+            }
+        query = state.get("rewritten_question") or state["question"]
+        try:
+            from ddgs import DDGS  # optional dependency
+            with DDGS() as ddgs:
+                hits = ddgs.text(query, max_results=4)
+            snippets = [f"{h['title']}: {h['body']}" for h in hits if h.get("body")]
+            log.info(f"Web fallback: {len(snippets)} snippets for '{query[:60]}'")
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Web search fallback failed: {e}")
+            snippets = []
+        return {
+            "web_results": snippets,
+            "trace": state.get("trace", []) + [{"node": "web_fallback", "n_results": len(snippets)}],
+        }
+
     def _node_generate(self, state: RagState) -> RagState:
-        docs = state.get("relevant_documents") or state.get("documents", [])
+        # Use relevant_documents if non-empty; do NOT fall back to raw documents
+        # (they were graded irrelevant). Web results take priority when KB is empty.
+        relevant = state.get("relevant_documents") or []
+        web_results = state.get("web_results", [])
         question = state.get("rewritten_question") or state["question"]
-        if not docs:
+
+        if not relevant and not web_results:
             return {
                 "answer": "I could not find relevant information in the knowledge base.",
                 "trace": state.get("trace", []) + [{"node": "generate", "no_context": True}],
             }
-        context = "\n\n---\n\n".join(
-            f"[{d.metadata.get('book_title') or d.metadata.get('source', d.id)}"
-            + (f", p.{d.metadata.get('page')}" if d.metadata.get('page') else "")
-            + f"]\n{d.text}"
-            for d in docs
-        )
-        system = self.prompts["rag_system"]
+
+        if relevant:
+            context = "\n\n---\n\n".join(
+                f"[{d.metadata.get('book_title') or d.metadata.get('source', d.id)}"
+                + (f", p.{d.metadata.get('page')}" if d.metadata.get('page') else "")
+                + f"]\n{d.text}"
+                for d in relevant
+            )
+        else:
+            context = "\n\n---\n\n".join(f"[Web]\n{r}" for r in web_results)
+
+        source = "web" if not relevant else "kb"
+        system = self.prompts["web_rag_system"] if source == "web" else self.prompts["rag_system"]
         user = self.prompts["rag_user"].format(context=context, question=question)
         answer = self.llm.generate(user, system=system)
         return {
             "answer": answer,
-            "trace": state.get("trace", []) + [{"node": "generate", "answer_len": len(answer)}],
+            "trace": state.get("trace", []) + [{"node": "generate", "answer_len": len(answer), "source": source}],
         }
 
     def _grade_batch(self, question: str, documents: list[str]) -> list[bool]:
@@ -231,13 +310,13 @@ class RagAgent(BaseAgent):
             decisions: list[bool] = []
             for line in lines[: len(documents)]:
                 decisions.append("yes" in line)
-            # Pad with True (keep by default) if the model returned fewer lines than expected
+            # Pad with False (discard) if model returned a summary instead of per-doc answers
             while len(decisions) < len(documents):
-                decisions.append(True)
+                decisions.append(False)
             return decisions
         except Exception as e:  # noqa: BLE001
-            log.warning(f"Batch grader failed, keeping all docs by default: {e}")
-            return [True] * len(documents)
+            log.warning(f"Batch grader failed, treating all docs as not relevant: {e}")
+            return [False] * len(documents)
 
     def _decide_after_grade(self, state: RagState) -> str:
         """Pure routing decision, no state mutation here (mutation lives in nodes)."""
@@ -248,4 +327,5 @@ class RagAgent(BaseAgent):
             return "generate"
         if iterations < max_iters:
             return "rewrite"
-        return "stop"
+        # KB exhausted — try web search before generating from empty context
+        return "web_fallback"

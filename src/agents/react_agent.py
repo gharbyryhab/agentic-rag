@@ -5,6 +5,7 @@ until it has enough context to answer. Hard-capped by `react.max_tool_calls`.
 """
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -41,64 +42,89 @@ class ReActAgent:
             elif turn["role"] == "assistant":
                 messages.append(AIMessage(content=turn["content"]))
         messages.append(HumanMessage(content=question))
-        trace: list[dict[str, Any]] = []
-        tool_call_count = 0
+
         max_calls = self._cfg.react.max_tool_calls
+        timeout_s = self._cfg.react.timeout_s
 
-        final_answer = ""
-        sources: list[dict[str, Any]] = []
+        # Shared state written by the stream thread, read by the caller afterward.
+        _state: dict[str, Any] = {
+            "final_answer": "",
+            "sources": [],
+            "trace": [],
+            "tool_call_count": 0,
+            "error": None,
+        }
 
-        try:
-            # Stream the graph so we can count tool calls and enforce cap
-            for chunk in self._graph.stream(
-                {"messages": messages},
-                config={"recursion_limit": max_calls * 4 + 5},
-            ):
-                for node_name, payload in chunk.items():
-                    msgs = payload.get("messages", []) if isinstance(payload, dict) else []
-                    for m in msgs:
-                        # Tool call accounting
-                        if hasattr(m, "tool_calls") and m.tool_calls:
-                            tool_call_count += len(m.tool_calls)
-                            for tc in m.tool_calls:
-                                trace.append(
+        def _collect() -> None:
+            tool_call_count = 0
+            final_answer = ""
+            sources: list[dict[str, Any]] = []
+            trace: list[dict[str, Any]] = []
+            try:
+                for chunk in self._graph.stream(
+                    {"messages": messages},
+                    config={"recursion_limit": max_calls * 4 + 5},
+                ):
+                    for node_name, payload in chunk.items():
+                        msgs = payload.get("messages", []) if isinstance(payload, dict) else []
+                        for m in msgs:
+                            if hasattr(m, "tool_calls") and m.tool_calls:
+                                tool_call_count += len(m.tool_calls)
+                                for tc in m.tool_calls:
+                                    trace.append(
+                                        {
+                                            "node": node_name,
+                                            "tool": tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "?"),
+                                            "args": tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {}),
+                                        }
+                                    )
+                                    if tool_call_count > max_calls:
+                                        log.warning(f"Hit max_tool_calls={max_calls}, stopping early")
+                                        break
+                            if getattr(m, "type", None) == "tool":
+                                tool_text = extract_message_text(getattr(m, "content", ""))
+                                tool_name = getattr(m, "name", "tool")
+                                sources.append(
                                     {
-                                        "node": node_name,
-                                        "tool": tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "?"),
-                                        "args": tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {}),
+                                        "source": f"<tool:{tool_name}>",
+                                        "book_title": tool_name,
+                                        "page": "",
+                                        "score": 0.0,
+                                        "snippet": tool_text[:300],
                                     }
                                 )
-                                if tool_call_count > max_calls:
-                                    log.warning(f"Hit max_tool_calls={max_calls}, stopping early")
-                                    break
-                        # Tool message → harvest sources
-                        if getattr(m, "type", None) == "tool":
-                            tool_text = extract_message_text(getattr(m, "content", ""))
-                            tool_name = getattr(m, "name", "tool")
-                            sources.append(
-                                {
-                                    "source": f"<tool:{tool_name}>",
-                                    "book_title": tool_name,
-                                    "page": "",
-                                    "score": 0.0,
-                                    "snippet": tool_text[:300],
-                                }
-                            )
-                        # Final AI answer (extract clean text, dropping thinking blocks)
-                        if getattr(m, "type", None) == "ai" and not getattr(m, "tool_calls", None):
-                            final_answer = extract_message_text(m.content)
-                if tool_call_count > max_calls:
-                    break
-        except Exception as e:  # noqa: BLE001
-            log.error(f"ReAct agent failed: {e}")
-            final_answer = (
-                "The agent failed to produce a complete answer. "
-                "Please try rephrasing or use a simpler query."
+                            if getattr(m, "type", None) == "ai" and not getattr(m, "tool_calls", None):
+                                final_answer = extract_message_text(m.content)
+                    if tool_call_count > max_calls:
+                        break
+            except Exception as e:  # noqa: BLE001
+                log.error(f"ReAct stream error: {e}")
+                _state["error"] = e
+            _state.update(
+                {
+                    "final_answer": final_answer,
+                    "sources": sources,
+                    "trace": trace,
+                    "tool_call_count": tool_call_count,
+                }
             )
 
+        thread = threading.Thread(target=_collect, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout_s)
+
+        if thread.is_alive():
+            # Thread is still running — the graph exceeded the wall-clock budget.
+            # Raise so that RagAgent's cross-route fallback (Bug 2) can take over.
+            log.warning(f"ReAct graph timed out after {timeout_s}s")
+            raise TimeoutError(f"ReAct graph timed out after {timeout_s}s")
+
+        if _state["error"] is not None:
+            raise _state["error"]
+
         return {
-            "answer": final_answer or "No answer produced.",
-            "sources": sources,
-            "trace": trace,
-            "tool_calls": tool_call_count,
+            "answer": _state["final_answer"] or "No answer produced.",
+            "sources": _state["sources"],
+            "trace": _state["trace"],
+            "tool_calls": _state["tool_call_count"],
         }

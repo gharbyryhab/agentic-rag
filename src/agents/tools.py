@@ -172,6 +172,34 @@ def make_search_with_filters(retriever: Retriever):
     return search_with_filters
 
 
+def make_search_web():
+    @tool("search_web")
+    def search_web(query: str) -> str:
+        """Search the web using DuckDuckGo.
+
+        Use as a LAST RESORT when all knowledge-base tools return no relevant results.
+
+        Args:
+            query: A precise, self-contained search query in English.
+        """
+        try:
+            from ddgs import DDGS  # optional dependency
+        except ImportError:
+            return "Web search unavailable (ddgs not installed)."
+        try:
+            with DDGS() as ddgs:
+                hits = ddgs.text(query, max_results=4)
+            if not hits:
+                return "No web results found."
+            blocks = [f"[{h['title']}]\n{h['body']}" for h in hits if h.get("body")]
+            return "\n\n---\n\n".join(blocks) or "No web results found."
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"search_web failed: {e}")
+            return f"Web search failed: {e}"
+
+    return search_web
+
+
 def make_compare_concepts(retriever: Retriever):
     @tool("compare_concepts")
     def compare_concepts(concept_a: str, concept_b: str) -> str:
@@ -202,4 +230,5 @@ def build_all_tools(retriever: Retriever) -> list[Any]:
         make_search_with_filters(retriever),
         make_get_book_info(),
         make_compare_concepts(retriever),
+        make_search_web(),
     ]
