@@ -132,6 +132,46 @@ def make_get_book_info():
     return get_book_info
 
 
+def make_search_with_filters(retriever: Retriever):
+    @tool("search_with_filters")
+    def search_with_filters(query: str, category: str = "", level: str = "") -> str:
+        """Search filtered by category and/or difficulty level simultaneously.
+
+        Use when the question requires filtering by BOTH a thematic category and a
+        difficulty level at the same time.
+
+        Args:
+            query: A self-contained search query.
+            category: One of [deep_learning, NLP, mathematics_ml, generative_AI,
+                data_science_appliquee_python, business_IA, fondements_ML_theorie_algorithmes,
+                feature_engineering_modelisation, sujets_complementaires,
+                IA_generale_introductions, specifique_R, superficiel_grand_public]
+                or empty string to skip this filter.
+            level: One of [beginner, intermediate, advanced, expert]
+                or empty string to skip this filter.
+        """
+        cat = category.strip()
+        lvl = level.strip().lower()
+
+        where: dict | None = None
+        if cat and lvl:
+            # ChromaDB requires explicit $and for simultaneous multi-field filtering
+            where = {"$and": [{"category": {"$eq": cat}}, {"level": {"$eq": lvl}}]}
+        elif cat:
+            where = {"category": cat}
+        elif lvl:
+            where = {"level": lvl}
+
+        try:
+            results = retriever.retrieve(query, where=where)
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"search_with_filters failed (category={cat!r}, level={lvl!r}): {e}")
+            return "Filter failed or returned no results. Fall back to search_knowledge_base."
+        return _format_results(results)
+
+    return search_with_filters
+
+
 def make_compare_concepts(retriever: Retriever):
     @tool("compare_concepts")
     def compare_concepts(concept_a: str, concept_b: str) -> str:
@@ -159,6 +199,7 @@ def build_all_tools(retriever: Retriever) -> list[Any]:
         make_search_knowledge_base(retriever),
         make_search_by_category(retriever),
         make_search_by_level(retriever),
+        make_search_with_filters(retriever),
         make_get_book_info(),
         make_compare_concepts(retriever),
     ]
