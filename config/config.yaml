@@ -105,6 +105,7 @@ agent:
   max_iterations: 6
   enable_query_rewriting: true
   enable_grading: true
+  enable_web_fallback: true   # DuckDuckGo fallback when KB returns no relevant docs
   verbose: true
   # Router : decides between fast CRAG path and ReAct tool-using path
   enable_router: true
@@ -112,6 +113,13 @@ agent:
   # ReAct tool-using agent
   react:
     max_tool_calls: 5             # hard cap on tool invocations per question
+    timeout_s: 60.0               # wall-clock cap (seconds) on the full graph.stream() call
+
+# ---------- Online evaluation (live LLM Judge — ~15% sampling) ----------
+online_eval:
+  enabled: true
+  sample_rate: 1.0           # fraction of live questions judged in the background
+  log_path: results/logs/runtime_quality.jsonl
 
 # ---------- Evaluation (Phase IV : Ragas) ----------
 evaluation:
