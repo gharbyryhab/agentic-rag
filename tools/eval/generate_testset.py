@@ -238,30 +238,57 @@ def generate_multi(n: int, store: ChromaStore, llm: GeminiClient) -> list[dict]:
     return qas
 
 
-def generate_ragas(n: int, store: ChromaStore) -> list[dict]:
+def generate_ragas(n: int, store: ChromaStore, reuse_kg: bool = False) -> list[dict]:
     """Use Ragas 0.4.x TestsetGenerator (modern API).
 
     Uses LOCAL BGE embeddings to avoid Google Cloud quota / 404 errors.
+
+    Args:
+        n: target testset size.
+        reuse_kg: if True AND a cached KG exists at `testset_gen.kg_cache_path`,
+            skip chunk sampling + transforms (Opt 1, ~80% token savings).
     """
     try:
         from langchain_core.documents import Document
-        from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_huggingface import HuggingFaceEmbeddings
         from ragas import RunConfig
         from ragas.embeddings import LangchainEmbeddingsWrapper
         from ragas.llms import LangchainLLMWrapper
         from ragas.testset import TestsetGenerator
+        from ragas.testset.graph import KnowledgeGraph
     except ImportError as e:
         raise ImportError(
             "`pip install ragas>=0.4 datasets langchain-huggingface langchain-google-genai` required."
         ) from e
 
     cfg = get_settings()
+    kg_cache_path = cfg.absolute_path(cfg.evaluation.testset_gen.kg_cache_path)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # FAST PATH (Opt 1) : reload cached Knowledge Graph and skip extraction
+    # ═══════════════════════════════════════════════════════════════════════
+    if reuse_kg and kg_cache_path.exists():
+        log.info(f"♻️  --reuse-kg : loading cached KG from {kg_cache_path}")
+        log.info("    Skipping chunk sampling + transforms (~80% token savings).")
+        kg = KnowledgeGraph.load(str(kg_cache_path))
+        log.info(f"    KG loaded : {len(kg.nodes)} nodes, {len(kg.relationships)} relationships")
+        return _generate_from_kg(kg, n, cfg)
+
+    if reuse_kg and not kg_cache_path.exists():
+        log.warning(
+            f"--reuse-kg set but no cache at {kg_cache_path}. "
+            "Falling back to full extraction (KG will be saved at the end)."
+        )
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # FULL PATH : sample chunks → extract KG → save KG → generate Q/A
+    # ═══════════════════════════════════════════════════════════════════════
     total = store.count()
     # Sub-sample size : Ragas needs enough docs to extract a knowledge graph,
     # but loading ALL 69k chunks would (a) explode SQLite's variable limit and
     # (b) make the knowledge-graph extraction extremely slow.
-    target = min(total, max(n * 3, 50))
+    sample_factor = cfg.evaluation.testset_gen.sample_factor
+    target = min(total, max(n * sample_factor, 50))
     log.info(f"Target {target} chunks via stratified sampling over full corpus ({total} total)…")
 
     # ─── Stratified proportional sampling with minimum floor ─────────────────
@@ -342,31 +369,45 @@ def generate_ragas(n: int, store: ChromaStore) -> list[dict]:
         f"embeddings={cfg.embeddings.model_name})…"
     )
 
+    # ─── Token-aware LLM wrapper with KEY ROTATION on TPD exhaustion ─────────
+    # The synthesizer can ROTATE through multiple Groq keys when TPD is hit.
+    # Set GROQ_API_KEYS=keyA,keyB,keyC in .env for automatic failover.
+    from tools.eval._rate_limiter import (
+        build_rotating_groq,
+        build_token_aware_gemini,
+    )
+
     if synth_cfg.provider == "groq":
-        try:
-            from langchain_groq import ChatGroq
-        except ImportError as e:
-            raise ImportError(
-                "`pip install langchain-groq` required for groq synthesizer."
-            ) from e
-        if not cfg.groq_api_key:
+        groq_keys = cfg.get_groq_keys()
+        if not groq_keys:
             raise RuntimeError(
-                "GROQ_API_KEY is missing. Set it in .env. "
-                "Get a free key at https://console.groq.com/keys"
+                "No Groq keys found. Set GROQ_API_KEY (single) or GROQ_API_KEYS "
+                "(comma-separated list) in .env. "
+                "Get free keys at https://console.groq.com/keys"
             )
-        synth_llm_raw = ChatGroq(
+        log.info(
+            f"Synthesizer : groq/{synth_cfg.model} with {len(groq_keys)} key(s) "
+            f"(rotation enabled when ≥2 keys)"
+        )
+        synth_llm_raw = build_rotating_groq(
             model=synth_cfg.model,
-            api_key=cfg.groq_api_key,
+            api_keys=groq_keys,
+            rpm=synth_cfg.rpm,
+            tpm=synth_cfg.tpm,
             temperature=0,
-            max_tokens=1024,
+            # 2048 needed for multi-hop synthesis (long query+reference JSON).
+            # Was 1024 → caused LLMDidNotFinishException mid-synthesis.
+            max_tokens=2048,
             timeout=120,
         )
-    else:   # gemini fallback
-        synth_llm_raw = ChatGoogleGenerativeAI(
+    else:   # gemini fallback (no TPM tracking — Gemini has no public TPM cap)
+        synth_llm_raw = build_token_aware_gemini(
             model=synth_cfg.model,
-            google_api_key=cfg.gemini_api_key,
+            api_key=cfg.gemini_api_key,
+            rpm=synth_cfg.rpm,
+            tpm=0,
             temperature=0,
-            max_output_tokens=1024,
+            max_output_tokens=2048,
             timeout=120,
         )
     generator_llm = LangchainLLMWrapper(synth_llm_raw)
@@ -377,44 +418,163 @@ def generate_ragas(n: int, store: ChromaStore) -> list[dict]:
         encode_kwargs={"normalize_embeddings": cfg.embeddings.normalize},
     ))
 
-    # max_workers calculated from RPM : we want to stay below the limit with margin
-    # ex: 30 RPM = 1 call every 2s; 4 workers × 1 call / 8s = 30 RPM exactly
-    max_workers = max(1, min(4, synth_cfg.rpm // 8))
+    # max_workers : the TokenBucketRateLimiter already paces calls correctly
+    # for both RPM and TPM, so extra workers would just block on the limiter.
+    # Keep some parallelism for I/O overlap but cap to 2 — beyond that, TPM
+    # spikes risk catching the limiter off-guard on long prompts.
+    max_workers = 2 if synth_cfg.tpm >= 12000 else 1
     run_config = RunConfig(
         timeout=120,
-        max_retries=3,
-        max_wait=60,
+        max_retries=5,            # extra retries — limiter + backoff handle bursts
+        max_wait=90,
         max_workers=max_workers,
     )
-    log.info(f"RunConfig: max_workers={max_workers} (synthesizer rpm={synth_cfg.rpm})")
+    log.info(
+        f"RunConfig: max_workers={max_workers} "
+        f"(synthesizer rpm={synth_cfg.rpm}, tpm={synth_cfg.tpm})"
+    )
 
     generator = TestsetGenerator(llm=generator_llm, embedding_model=embeddings)
     log.info(f"Generating {n} Q/A with Ragas (this can take a while)…")
-    dataset = generator.generate_with_langchain_docs(
-        documents, testset_size=n, run_config=run_config,
+
+    # ─── CRITICAL : Save the KG IMMEDIATELY after extraction, BEFORE synthesis
+    # so a synthesis crash (e.g. max_tokens issue) doesn't lose hours of KG
+    # construction work. We attach a save-callback to the knowledge_graph
+    # attribute via a try/finally wrapper.
+    dataset = None
+    synthesis_error: Exception | None = None
+    try:
+        dataset = generator.generate_with_langchain_docs(
+            documents, testset_size=n, run_config=run_config,
+        )
+    except Exception as e:  # noqa: BLE001
+        synthesis_error = e
+        log.error(f"⚠️  Synthesis phase failed : {type(e).__name__}: {e}")
+
+    # ─── Save KG no matter what (success OR synthesis failure) ───────────────
+    kg_saved = False
+    if hasattr(generator, "knowledge_graph") and generator.knowledge_graph is not None:
+        try:
+            kg = generator.knowledge_graph
+            if len(kg.nodes) > 0:
+                kg_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                kg.save(str(kg_cache_path))
+                kg_saved = True
+                log.info(
+                    f"💾 Knowledge graph cached → {kg_cache_path} "
+                    f"({len(kg.nodes)} nodes, {len(kg.relationships)} relationships)."
+                )
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Failed to save KG cache: {e}")
+
+    # ─── If synthesis failed but KG is saved, give the user a recovery path ──
+    if synthesis_error is not None:
+        if kg_saved:
+            log.error(
+                "═" * 70 + "\n"
+                "❌ Synthesis failed, but the KG was rescued and saved.\n"
+                "✅ You can RETRY synthesis only (no KG rebuild) with :\n"
+                f"   python -m tools.eval.generate_testset --size {n} --strategy ragas --reuse-kg\n"
+                "═" * 70
+            )
+        raise synthesis_error
+
+    return _dataset_to_qas(dataset)
+
+
+# ─── KG-only generation path (Opt 1 fast path) ────────────────────────────────
+
+def _generate_from_kg(kg, n: int, cfg) -> list[dict]:
+    """Generate Q/A pairs from an existing Knowledge Graph (no extraction).
+
+    Used by the --reuse-kg fast path : we still need the synthesizer LLM and
+    embeddings (for question generation), but we SKIP the costly transforms
+    that built the KG in the first place.
+    """
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from ragas import RunConfig
+    from ragas.embeddings import LangchainEmbeddingsWrapper
+    from ragas.llms import LangchainLLMWrapper
+    from ragas.testset import TestsetGenerator
+
+    from tools.eval._rate_limiter import (
+        build_rotating_groq,
+        build_token_aware_gemini,
     )
+
+    synth_cfg = cfg.evaluation.synthesizer
+    log.info(
+        f"Fast path : synthesizer={synth_cfg.provider}/{synth_cfg.model} "
+        f"(KG already loaded — only Q/A synthesis will be billed)"
+    )
+
+    if synth_cfg.provider == "groq":
+        groq_keys = cfg.get_groq_keys()
+        if not groq_keys:
+            raise RuntimeError("No Groq keys (set GROQ_API_KEY / GROQ_API_KEYS).")
+        synth_llm_raw = build_rotating_groq(
+            model=synth_cfg.model,
+            api_keys=groq_keys,
+            rpm=synth_cfg.rpm,
+            tpm=synth_cfg.tpm,
+            temperature=0,
+            max_tokens=2048,         # multi-hop JSON outputs need ≥1500 tokens
+            timeout=120,
+        )
+    else:
+        synth_llm_raw = build_token_aware_gemini(
+            model=synth_cfg.model,
+            api_key=cfg.gemini_api_key,
+            rpm=synth_cfg.rpm,
+            tpm=0,
+            temperature=0,
+            max_output_tokens=2048,
+            timeout=120,
+        )
+    generator_llm = LangchainLLMWrapper(synth_llm_raw)
+
+    embeddings = LangchainEmbeddingsWrapper(HuggingFaceEmbeddings(
+        model_name=cfg.embeddings.model_name,
+        model_kwargs={"device": cfg.embeddings.device},
+        encode_kwargs={"normalize_embeddings": cfg.embeddings.normalize},
+    ))
+
+    max_workers = 2 if synth_cfg.tpm >= 12000 else 1
+    run_config = RunConfig(
+        timeout=120, max_retries=5, max_wait=90, max_workers=max_workers,
+    )
+
+    generator = TestsetGenerator(
+        llm=generator_llm,
+        embedding_model=embeddings,
+        knowledge_graph=kg,   # ← key : reuse the pre-built KG
+    )
+    log.info(f"Generating {n} Q/A from cached KG…")
+    dataset = generator.generate(testset_size=n, run_config=run_config)
+    return _dataset_to_qas(dataset)
+
+
+def _dataset_to_qas(dataset) -> list[dict]:
+    """Convert a Ragas Testset dataset → our internal list-of-dict format."""
     df = dataset.to_pandas()
     log.info(f"Ragas returned {len(df)} rows, columns: {list(df.columns)}")
 
     qas: list[dict] = []
     for _, row in df.iterrows():
         # Ragas 0.4 uses 'user_input' / 'reference' / 'reference_contexts'
-        # Fallback to older names for compatibility
         q = row.get("user_input") or row.get("question", "") or ""
         gt = row.get("reference") or row.get("ground_truth", "") or ""
         ctxs = row.get("reference_contexts") or row.get("contexts", []) or []
         if not q or not gt:
             continue
-        qas.append(
-            {
-                "question": str(q),
-                "ground_truth": str(gt),
-                "contexts": [str(c) for c in (ctxs if isinstance(ctxs, list) else [ctxs])],
-                "metadata": {
-                    "synthesizer": str(row.get("synthesizer_name", "ragas")),
-                },
-            }
-        )
+        qas.append({
+            "question": str(q),
+            "ground_truth": str(gt),
+            "contexts": [str(c) for c in (ctxs if isinstance(ctxs, list) else [ctxs])],
+            "metadata": {
+                "synthesizer": str(row.get("synthesizer_name", "ragas")),
+            },
+        })
     return qas
 
 
@@ -429,6 +589,14 @@ def main() -> int:
              "good for multi-hop), `ragas` (rich Q types via Ragas TestsetGenerator).",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--reuse-kg",
+        action="store_true",
+        help="(strategy=ragas only) Reload the cached Knowledge Graph from "
+             "`testset_gen.kg_cache_path` instead of rebuilding it. "
+             "First run builds + saves the KG ; subsequent runs reuse it "
+             "(~80%% token savings).",
+    )
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -451,7 +619,7 @@ def main() -> int:
         llm = GeminiClient()
         qas = generate_multi(n, store, llm)
     else:  # ragas
-        qas = generate_ragas(n, store)
+        qas = generate_ragas(n, store, reuse_kg=args.reuse_kg)
 
     # ─── Archive permanente ──────────────────────────────────────────
     # Tout nouveau testset est aussi sauvegardé dans results/eval/testsets/

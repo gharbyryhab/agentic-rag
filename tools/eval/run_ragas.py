@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -35,124 +34,70 @@ sys.path.insert(0, str(ROOT))
 from src.config import get_settings  # noqa: E402
 from src.pipeline import QueryPipeline  # noqa: E402
 from src.utils import get_logger  # noqa: E402
+from tools.eval._rate_limiter import (  # noqa: E402
+    build_rotating_groq,
+    build_token_aware_gemini,
+)
 
 log = get_logger("run_ragas")
 
 
 # ---------- Judge LLM + embeddings ----------
 
-class _GlobalRateLimiter:
-    """Process-wide token bucket. Blocks until the next slot is available."""
-
-    def __init__(self, rpm: int) -> None:
-        self._min_interval = 60.0 / max(rpm, 1)
-        self._last = 0.0
-        self._lock = threading.Lock()
-
-    def acquire(self) -> None:
-        with self._lock:
-            now = time.monotonic()
-            wait = self._min_interval - (now - self._last)
-            if wait > 0:
-                time.sleep(wait)
-            self._last = time.monotonic()
-
-
 def _build_judge_llm():
     """
-    Build a Ragas-compatible LLM judge with strict client-side rate limiting.
+    Build a Ragas-compatible LLM judge with :
+      - MULTI-KEY ROTATION on TPD exhaustion (Groq) → uses all keys in
+        GROQ_API_KEYS, matching the synthesizer's setup.
+      - TPM/RPM token bucket → smooth bursts, avoid 429.
+      - max_tokens=2048 → faithfulness produces long claim-decomposition JSON.
 
-    We subclass ChatGoogleGenerativeAI so EVERY .invoke / .ainvoke call passes
-    through the limiter. This prevents the 429 quota storm we saw on the
-    free tier of AI Studio.
+    The previous version used a single-key wrapper without rotation, which
+    caused TimeoutError when the active key's TPD got exhausted mid-evaluation.
     """
     from ragas.llms import LangchainLLMWrapper
 
     cfg = get_settings()
     judge_cfg = cfg.evaluation.judge
-    limiter = _GlobalRateLimiter(rpm=judge_cfg.rpm)
 
     if judge_cfg.provider == "groq":
-        # Groq path : Llama 3.3 70B Versatile (or similar) via langchain-groq
-        try:
-            from langchain_groq import ChatGroq
-        except ImportError as e:
-            raise ImportError("`pip install langchain-groq` required.") from e
-        if not cfg.groq_api_key:
+        groq_keys = cfg.get_groq_keys()
+        if not groq_keys:
             raise RuntimeError(
-                "GROQ_API_KEY is missing. Set it in .env. "
-                "Get a free key at https://console.groq.com/keys"
+                "No Groq keys found. Set GROQ_API_KEY (single) or "
+                "GROQ_API_KEYS (comma-separated list) in .env. "
+                "Get free keys at https://console.groq.com/keys"
             )
-
-        class RateLimitedGroq(ChatGroq):
-            """Rate-limited ChatGroq : every .invoke / .ainvoke passes through
-            the global limiter so we stay under Groq's RPM cap."""
-
-            def _generate(self, messages, *, run_manager=None, stop=None, **kwargs):
-                limiter.acquire()
-                return super()._generate(messages, run_manager=run_manager, stop=stop, **kwargs)
-
-            async def _agenerate(self, messages, *, run_manager=None, stop=None, **kwargs):
-                limiter.acquire()
-                return await super()._agenerate(messages, run_manager=run_manager, stop=stop, **kwargs)
-
-        judge = RateLimitedGroq(
+        judge = build_rotating_groq(
             model=judge_cfg.model,
-            api_key=cfg.groq_api_key,
+            api_keys=groq_keys,
+            rpm=judge_cfg.rpm,
+            tpm=judge_cfg.tpm,
             temperature=0,
-            max_tokens=1024,
+            # 2048 needed for faithfulness : the Judge decomposes the answer
+            # into atomic claims, producing long structured JSON. 1024 was
+            # causing LLMDidNotFinishException mid-evaluation.
+            max_tokens=2048,
             timeout=120,
         )
-        log.info(f"Judge LLM : groq/{judge_cfg.model} (rate-limited to {judge_cfg.rpm} RPM)")
+        log.info(
+            f"Judge LLM : groq/{judge_cfg.model} with {len(groq_keys)} key(s) "
+            f"(rpm={judge_cfg.rpm}, tpm={judge_cfg.tpm}, max_tokens=2048, "
+            f"rotation={'enabled' if len(groq_keys) >= 2 else 'disabled (1 key)'})"
+        )
         return LangchainLLMWrapper(judge)
 
-    # ── Gemini fallback (legacy / backup path) ──────────────────────────────
-    from langchain_google_genai import ChatGoogleGenerativeAI
-
-    class RateLimitedGemini(ChatGoogleGenerativeAI):
-        """Rate-limited Gemini that ALSO emulates n>1 by calling the model
-        sequentially N times. Required because lite variants reject n>1."""
-
-        def _generate(self, messages, *, run_manager=None, stop=None, **kwargs):
-            from langchain_core.outputs import ChatResult
-
-            n = kwargs.pop("n", None) or 1
-            limiter.acquire()
-            if n == 1:
-                return super()._generate(messages, run_manager=run_manager, stop=stop, **kwargs)
-            gens = []
-            first = super()._generate(messages, run_manager=run_manager, stop=stop, **kwargs)
-            gens.extend(first.generations)
-            for _ in range(n - 1):
-                limiter.acquire()
-                more = super()._generate(messages, run_manager=run_manager, stop=stop, **kwargs)
-                gens.extend(more.generations)
-            return ChatResult(generations=gens, llm_output=first.llm_output)
-
-        async def _agenerate(self, messages, *, run_manager=None, stop=None, **kwargs):
-            from langchain_core.outputs import ChatResult
-
-            n = kwargs.pop("n", None) or 1
-            limiter.acquire()
-            if n == 1:
-                return await super()._agenerate(messages, run_manager=run_manager, stop=stop, **kwargs)
-            gens = []
-            first = await super()._agenerate(messages, run_manager=run_manager, stop=stop, **kwargs)
-            gens.extend(first.generations)
-            for _ in range(n - 1):
-                limiter.acquire()
-                more = await super()._agenerate(messages, run_manager=run_manager, stop=stop, **kwargs)
-                gens.extend(more.generations)
-            return ChatResult(generations=gens, llm_output=first.llm_output)
-
-    judge = RateLimitedGemini(
+    # ── Gemini fallback ─────────────────────────────────────────────────────
+    judge = build_token_aware_gemini(
         model=judge_cfg.model,
-        google_api_key=cfg.gemini_api_key,
+        api_key=cfg.gemini_api_key,
+        rpm=judge_cfg.rpm,
+        tpm=0,   # Gemini has no public TPM cap on free tier
         temperature=0,
-        max_output_tokens=1024,
+        max_output_tokens=2048,
         timeout=120,
     )
-    log.info(f"Judge LLM : gemini/{judge_cfg.model} (rate-limited to {judge_cfg.rpm} RPM)")
+    log.info(f"Judge LLM : gemini/{judge_cfg.model} (rpm={judge_cfg.rpm})")
     return LangchainLLMWrapper(judge)
 
 
@@ -240,12 +185,18 @@ def run_pipeline_over_testset(testset: list[dict]) -> list[dict]:
 
 # ---------- Evaluation ----------
 
-def evaluate(records: list[dict]) -> dict:
+def evaluate(records: list[dict], skip_metrics: dict[str, float] | None = None) -> dict:
     """
     Run Ragas metrics over the records.
 
-    To survive Gemini rate limits and individual metric failures, we run each
-    metric SEPARATELY with strict concurrency (max_workers=1).
+    To survive Groq/Gemini rate limits and individual metric failures, we run
+    each metric SEPARATELY with strict concurrency (max_workers=1).
+
+    Args:
+        records: list of {question, answer, contexts, ground_truth, ...} dicts.
+        skip_metrics: dict of metric_name → score that are already computed.
+            These metrics are skipped (resume mode). Pass {} or None to
+            recompute everything.
     """
     try:
         from datasets import Dataset
@@ -257,6 +208,17 @@ def evaluate(records: list[dict]) -> dict:
     metric_objs = _select_metrics(cfg.evaluation.metrics)
     if not metric_objs:
         raise RuntimeError("No valid Ragas metrics selected.")
+
+    skip_metrics = skip_metrics or {}
+    # Filter out metrics we already have a valid score for
+    remaining = [m for m in metric_objs if m.name not in skip_metrics]
+    if len(remaining) < len(metric_objs):
+        skipped_names = [m.name for m in metric_objs if m.name in skip_metrics]
+        log.info(f"♻️  Skipping {len(skipped_names)} already-computed metric(s): {skipped_names}")
+        metric_objs = remaining
+    if not metric_objs:
+        log.info("All metrics already computed (resume mode). Nothing to do.")
+        return {"aggregated": dict(skip_metrics), "per_row": []}
 
     judge = _build_judge_llm()
     embeddings = _build_judge_embeddings()
@@ -344,9 +306,65 @@ def main() -> int:
     parser.add_argument("--tag", type=str, default=None, help="Subdir name under results/eval/")
     parser.add_argument("--sample", type=int, default=None, help="Subsample the testset")
     parser.add_argument("--testset", type=str, default=None)
+    parser.add_argument(
+        "--from-records",
+        type=str,
+        default=None,
+        help="Path to an existing records.json. Skips the pipeline replay and "
+             "directly computes the metrics. Useful when only the metric step "
+             "failed in a previous run (e.g. judge LLM 429 storm).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recompute ALL metrics even if some are already in metrics.json. "
+             "Default behavior : skip already-computed metrics (resume mode).",
+    )
     args = parser.parse_args()
 
     cfg = get_settings()
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # FROM-RECORDS MODE : skip pipeline, just (re)compute metrics
+    # ═══════════════════════════════════════════════════════════════════════
+    if args.from_records:
+        records_path = Path(args.from_records)
+        if not records_path.exists():
+            log.error(f"Records file not found : {records_path}")
+            return 1
+        with records_path.open("r", encoding="utf-8") as f:
+            records = json.load(f)
+        log.info(f"♻️  Loaded {len(records)} records from {records_path}")
+
+        # Reuse the records' parent directory as output dir → metrics land
+        # next to the records they were computed from.
+        out_dir = records_path.parent
+        log.info(f"Output directory : {out_dir} (next to existing records)")
+
+        # Load already-computed metrics if any (for resume)
+        existing_metrics = _load_existing_metrics(out_dir, force=args.force)
+        if existing_metrics:
+            already_done = [k for k, v in existing_metrics.items() if v == v]
+            log.info(
+                f"♻️  Resuming : {len(already_done)} metric(s) already computed "
+                f"({', '.join(already_done) or 'none'}). Use --force to recompute."
+            )
+
+        metrics = evaluate(records, skip_metrics=existing_metrics)
+        # Merge with existing : existing wins unless --force
+        if existing_metrics and not args.force:
+            for k, v in existing_metrics.items():
+                if v == v and (k not in metrics["aggregated"] or
+                               metrics["aggregated"][k] != metrics["aggregated"][k]):
+                    metrics["aggregated"][k] = v
+
+        _save_metrics(out_dir, metrics)
+        _print_final(out_dir.name, metrics["aggregated"], out_dir)
+        return 0
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # FULL MODE : pipeline replay + metrics
+    # ═══════════════════════════════════════════════════════════════════════
     testset_path = Path(args.testset) if args.testset else cfg.absolute_path(cfg.evaluation.testset_path)
     if not testset_path.exists():
         log.error(f"Testset not found at {testset_path}. Run generate_testset.py first.")
@@ -359,8 +377,6 @@ def main() -> int:
     log.info(f"Loaded {len(testset)} Q/A pairs from {testset_path.name}")
 
     # Build a self-documenting tag : <base>_<chunking_strategy>_<YYYYMMDD>_<HHMMSS>
-    # so successive runs never overwrite each other and the chunking strategy
-    # used is visible at a glance.
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     chunking_strategy = cfg.chunking.strategy
     base = args.tag or "run"
@@ -403,22 +419,53 @@ def main() -> int:
 
     # 2) Ragas
     metrics = evaluate(records)
+    _save_metrics(out_dir, metrics)
+    _print_final(tag, metrics["aggregated"], out_dir)
+    return 0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers for resume / from-records mode
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _load_existing_metrics(out_dir: Path, force: bool) -> dict[str, float]:
+    """Read metrics.json from a previous (partial) run. Returns {} if --force
+    or no metrics.json yet."""
+    if force:
+        return {}
+    metrics_path = out_dir / "metrics.json"
+    if not metrics_path.exists():
+        return {}
+    try:
+        with metrics_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        # Filter out NaN (failed previously, want to retry)
+        return {k: float(v) for k, v in data.items() if isinstance(v, (int, float)) and v == v}
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"Could not read existing metrics.json: {e}")
+        return {}
+
+
+def _save_metrics(out_dir: Path, metrics: dict) -> None:
+    """Save metrics.json + per_row.json atomically."""
     with (out_dir / "metrics.json").open("w", encoding="utf-8") as f:
         json.dump(metrics["aggregated"], f, indent=2)
     with (out_dir / "per_row.json").open("w", encoding="utf-8") as f:
         json.dump(metrics["per_row"], f, ensure_ascii=False, indent=2, default=str)
 
+
+def _print_final(tag: str, aggregated: dict, out_dir: Path) -> None:
+    """Pretty-print the final metric summary."""
     print("\n" + "=" * 60)
     print(f"RAGAS RESULTS — {tag}")
     print("=" * 60)
-    for k, v in metrics["aggregated"].items():
-        if v != v:  # NaN check
+    for k, v in aggregated.items():
+        if not isinstance(v, (int, float)) or v != v:  # NaN check
             print(f"  {k:<25} FAILED")
         else:
             print(f"  {k:<25} {v:.4f}")
     print("=" * 60)
     print(f"Saved : {out_dir}")
-    return 0
 
 
 if __name__ == "__main__":
