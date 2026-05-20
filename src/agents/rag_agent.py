@@ -76,7 +76,8 @@ class RagAgent(BaseAgent):
 
         # 2) Dispatch
         if route == "agent":
-            result = self.react_agent.run(question)
+            prior_history = self.memory.history()[:-1]  # exclude the current user turn
+            result = self.react_agent.run(question, history=prior_history)
             result["route"] = "agent"
         else:
             result = self._run_simple(question)
@@ -183,10 +184,8 @@ class RagAgent(BaseAgent):
                 "trace": state.get("trace", []) + [{"node": "grade", "skipped": True}],
             }
         question = state.get("rewritten_question") or state["question"]
-        keep: list[SearchResult] = []
-        for d in docs:
-            if self._grade_one(question, d.text):
-                keep.append(d)
+        decisions = self._grade_batch(question, [d.text for d in docs])
+        keep = [d for d, relevant in zip(docs, decisions) if relevant]
         log.info(f"Graded relevant: {len(keep)}/{len(docs)} (iter {new_iters})")
         return {
             "relevant_documents": keep,
@@ -218,15 +217,27 @@ class RagAgent(BaseAgent):
             "trace": state.get("trace", []) + [{"node": "generate", "answer_len": len(answer)}],
         }
 
-    def _grade_one(self, question: str, document: str) -> bool:
-        system = self.prompts["grade_system"]
-        user = self.prompts["grade_user"].format(document=document[:2000], question=question)
+    def _grade_batch(self, question: str, documents: list[str]) -> list[bool]:
+        numbered = "\n\n".join(
+            f"Document {i + 1}:\n{doc[:2000]}" for i, doc in enumerate(documents)
+        )
+        system = self.prompts["grade_batch_system"]
+        user = self.prompts["grade_batch_user"].format(
+            question=question, documents=numbered, n=len(documents)
+        )
         try:
-            verdict = self.llm.generate(user, system=system).strip().lower()
-            return verdict.startswith("y")
+            response = self.llm.generate(user, system=system).strip()
+            lines = [ln.strip().lower() for ln in response.splitlines() if ln.strip()]
+            decisions: list[bool] = []
+            for line in lines[: len(documents)]:
+                decisions.append("yes" in line)
+            # Pad with True (keep by default) if the model returned fewer lines than expected
+            while len(decisions) < len(documents):
+                decisions.append(True)
+            return decisions
         except Exception as e:  # noqa: BLE001
-            log.warning(f"Grader failed, keeping doc by default: {e}")
-            return True
+            log.warning(f"Batch grader failed, keeping all docs by default: {e}")
+            return [True] * len(documents)
 
     def _decide_after_grade(self, state: RagState) -> str:
         """Pure routing decision, no state mutation here (mutation lives in nodes)."""

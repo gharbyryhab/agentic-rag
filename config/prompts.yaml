@@ -67,6 +67,23 @@ grade_user: |
 
   Is this document relevant to the question?
 
+grade_batch_system: |
+  You are a grader assessing relevance of retrieved documents to a user question.
+  For each numbered document, output "yes" if it is relevant or "no" if it is not.
+  Output ONLY a numbered list, one decision per line, in the same order as the documents.
+  Example for 3 documents:
+  1. yes
+  2. no
+  3. yes
+
+grade_batch_user: |
+  Question: {question}
+
+  {documents}
+
+  For each document above, is it relevant to the question?
+  Output one "yes" or "no" per line, numbered 1 to {n}:
+
 # ============================================================
 # Phase III : Router and ReAct agent
 # ============================================================
@@ -105,6 +122,8 @@ react_system: |
          IA_generale_introductions, specifique_R, superficiel_grand_public)
     - search_by_level(query, level): search by difficulty
         (level: beginner | intermediate | advanced | expert)
+    - search_with_filters(query, category, level): search filtered by BOTH category and
+        level simultaneously — use this instead of calling the two above separately
     - get_book_info(title_query): get rich metadata (description, key chapters,
         target audience) of a specific book
     - compare_concepts(concept_a, concept_b): retrieve passages about each concept

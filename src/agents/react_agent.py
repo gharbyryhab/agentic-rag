@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
 
 from src.agents.tools import build_all_tools
@@ -33,11 +33,14 @@ class ReActAgent:
             tools=self._tools,
         )
 
-    def run(self, question: str) -> dict[str, Any]:
-        messages = [
-            SystemMessage(content=self._prompts["react_system"]),
-            HumanMessage(content=question),
-        ]
+    def run(self, question: str, history: list[dict] | None = None) -> dict[str, Any]:
+        messages: list = [SystemMessage(content=self._prompts["react_system"])]
+        for turn in (history or []):
+            if turn["role"] == "user":
+                messages.append(HumanMessage(content=turn["content"]))
+            elif turn["role"] == "assistant":
+                messages.append(AIMessage(content=turn["content"]))
+        messages.append(HumanMessage(content=question))
         trace: list[dict[str, Any]] = []
         tool_call_count = 0
         max_calls = self._cfg.react.max_tool_calls
