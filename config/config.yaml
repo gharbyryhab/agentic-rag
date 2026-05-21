@@ -113,13 +113,20 @@ agent:
   # ReAct tool-using agent
   react:
     max_tool_calls: 5             # hard cap on tool invocations per question
-    timeout_s: 60.0               # wall-clock cap (seconds) on the full graph.stream() call
+    timeout_s: 999999               # wall-clock cap (seconds) on the full graph.stream() call
 
 # ---------- Online evaluation (live LLM Judge — ~15% sampling) ----------
 online_eval:
   enabled: true
   sample_rate: 1.0           # fraction of live questions judged in the background
   log_path: results/logs/runtime_quality.jsonl
+  # Judge LLM — deliberately independent from the RAG LLM to avoid self-scoring bias.
+  # Provider 'groq' + llama-3.3-70b is free, fast, and avoids the Gemini RAG model
+  # grading its own outputs. Switch provider to 'gemini' as fallback if Groq is unavailable.
+  judge:
+    provider: groq                   # groq | gemini
+    model: llama-3.3-70b-versatile
+    rpm: 30                          # Groq free tier: 30 RPM
 
 # ---------- Evaluation (Phase IV : Ragas) ----------
 evaluation:

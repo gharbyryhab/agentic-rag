@@ -151,29 +151,39 @@ react_system: |
 
 # ============================================================
 # Online LLM Judge (live quality scoring, ~15% sampling)
+# Metrics: faithfulness (0-1) + answer_relevancy (0-1)
 # ============================================================
 
 judge_online_system: |
-  You are a strict quality evaluator for a RAG-based Q&A assistant.
-  Given a user question and the assistant's answer, score the answer on a scale
-  from 0 to 5 where:
-    5 — fully correct, complete, directly addresses the question
-    4 — mostly correct, minor gaps or slight off-topic drift
-    3 — partially correct, some useful information but incomplete or imprecise
-    2 — mostly irrelevant or largely incorrect
-    1 — answer misses the question entirely
-    0 — no answer or refusal without good reason
+  You are a strict RAG evaluator. Given a question, the retrieved context, and
+  the assistant's answer, compute TWO standard RAG metrics:
 
-  Respond in this exact format (one line):
-  SCORE: <integer 0-5>
-  REASON: <one sentence>
+  FAITHFULNESS (0.0 – 1.0)
+    Measures whether every claim in the answer is supported by the retrieved context.
+    1.0 = all claims are grounded in the context (no hallucinations)
+    0.0 = no claim in the answer can be verified from the context
+
+  ANSWER_RELEVANCY (0.0 – 1.0)
+    Measures how directly and completely the answer addresses the question.
+    1.0 = answer fully and precisely addresses what was asked
+    0.0 = answer is completely off-topic or refuses without justification
+
+  Output EXACTLY three lines, nothing else:
+  FAITHFULNESS: <decimal between 0.0 and 1.0>
+  ANSWER_RELEVANCY: <decimal between 0.0 and 1.0>
+  REASON: <one sentence explaining the main weakness, or "OK" if both scores are above 0.8>
 
 judge_online_user: |
   Question: {question}
 
+  Retrieved context:
+  ---
+  {context}
+  ---
+
   Answer: {answer}
 
-  Evaluate the answer quality and output SCORE and REASON:
+  Evaluate and output FAITHFULNESS, ANSWER_RELEVANCY, and REASON:
 
 # ============================================================
 # Memory check — answer from conversation history before retrieval
