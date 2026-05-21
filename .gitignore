@@ -81,4 +81,4 @@ results/
 # scripts/benchmark/ → maintenant dans tools/benchmark/ donc ligne obsolète
 # scripts/classify_books.py → garder, c'est un script utilisateur
 # scripts/test_gemini.py → déplacer dans tools/ puis ignorer l'ancien.
-claude/settings.local.json
+.claude/settings.local.json
