@@ -52,7 +52,10 @@ def _print_result(result: dict) -> None:
             except Exception:  # noqa: BLE001
                 score_str = "?"
             snippet = s.get("snippet") or s.get("tool_output_excerpt") or ""
+            url = s.get("url", "")
             print(f"{i}. [{score_str}] {label}{page_str}")
+            if url:
+                print(f"   {url}")
             print(f"   {snippet[:120]}...")
     if result.get("tool_calls") is not None:
         print(f"\n(tool calls : {result['tool_calls']})")
@@ -85,6 +88,7 @@ def main() -> int:
                 print("(history cleared)\n")
                 continue
             _print_result(pipeline.ask(q))
+            pipeline.flush_judge()
         return 0
 
     if not args.question:
