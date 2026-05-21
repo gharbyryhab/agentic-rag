@@ -80,4 +80,5 @@ results/
 # --- NE PAS ignorer ces dossiers importants ---
 # scripts/benchmark/ → maintenant dans tools/benchmark/ donc ligne obsolète
 # scripts/classify_books.py → garder, c'est un script utilisateur
-# scripts/test_gemini.py → déplacer dans tools/ puis ignorer l'ancien
+# scripts/test_gemini.py → déplacer dans tools/ puis ignorer l'ancien.
+claude/settings.local.json
