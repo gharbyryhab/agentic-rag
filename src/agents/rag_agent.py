@@ -41,6 +41,7 @@ class RagState(TypedDict, total=False):
     documents: list[SearchResult]
     relevant_documents: list[SearchResult]
     web_results: list[str]   # DuckDuckGo snippets used when KB has no relevant docs
+    web_sources: list[dict[str, Any]]  # structured web hits with URL for source display
     answer: str
     iterations: int
     trace: list[dict[str, Any]]
@@ -143,20 +144,23 @@ class RagAgent(BaseAgent):
         }
         final: RagState = self.simple_graph.invoke(initial)
 
-        sources = [
+        relevant_docs = final.get("relevant_documents", [])
+        kb_sources = [
             {
                 "id": d.id,
                 "source": d.metadata.get("source", d.id),
                 "book_title": d.metadata.get("book_title", ""),
                 "page": d.metadata.get("page", ""),
                 "score": d.score,
-                "snippet": d.text[:300],
+                "snippet": d.text,
             }
-            for d in final.get("relevant_documents", [])
+            for d in relevant_docs
         ]
+        sources = kb_sources + final.get("web_sources", [])
         return {
             "answer": final.get("answer", ""),
             "sources": sources,
+            "contexts": [d.text for d in relevant_docs],
             "trace": final.get("trace", []),
             "iterations": final.get("iterations", 0),
         }
@@ -254,13 +258,27 @@ class RagAgent(BaseAgent):
             from ddgs import DDGS  # optional dependency
             with DDGS() as ddgs:
                 hits = ddgs.text(query, max_results=4)
-            snippets = [f"{h['title']}: {h['body']}" for h in hits if h.get("body")]
+            valid_hits = [h for h in hits if h.get("body")]
+            snippets = [f"{h['title']}: {h['body']}" for h in valid_hits]
+            web_sources = [
+                {
+                    "source": h.get("href", ""),
+                    "book_title": h.get("title", "Web"),
+                    "url": h.get("href", ""),
+                    "page": "",
+                    "score": 0.0,
+                    "snippet": h.get("body", ""),
+                }
+                for h in valid_hits
+            ]
             log.info(f"Web fallback: {len(snippets)} snippets for '{query[:60]}'")
         except Exception as e:  # noqa: BLE001
             log.warning(f"Web search fallback failed: {e}")
             snippets = []
+            web_sources = []
         return {
             "web_results": snippets,
+            "web_sources": web_sources,
             "trace": state.get("trace", []) + [{"node": "web_fallback", "n_results": len(snippets)}],
         }
 

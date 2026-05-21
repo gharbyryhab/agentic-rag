@@ -42,7 +42,10 @@ class GeminiClient(LLM):
         )
 
     def _is_gemma3(self) -> bool:
-        return "gemma-3" in self._cfg.model_name
+        """Retourne True pour TOUS les modèles Gemma (gemma-3, gemma-4, …).
+        Ces modèles ne supportent pas SystemMessage → le system prompt
+        doit être fusionné dans le premier HumanMessage."""
+        return "gemma" in self._cfg.model_name.lower()
 
     # ── NOUVELLE MÉTHODE CENTRALE ──────────────────────────────────────────
     def _extract_text(self, result: AIMessage) -> str:

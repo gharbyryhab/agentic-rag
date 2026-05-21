@@ -168,10 +168,18 @@ class JudgeConfig(BaseModel):
     tpm: int = 12000                         # Groq free tier TPM limit (tokens/min)
 
 
+class OnlineJudgeConfig(BaseModel):
+    """Separate LLM for the online judge — avoids self-scoring bias."""
+    provider: str = "groq"                    # groq | gemini
+    model: str = "llama-3.3-70b-versatile"
+    rpm: int = 30
+
+
 class OnlineEvalConfig(BaseModel):
     enabled: bool = True
     sample_rate: float = 0.15          # fraction of live questions to evaluate
     log_path: str = "results/logs/runtime_quality.jsonl"
+    judge: OnlineJudgeConfig = Field(default_factory=OnlineJudgeConfig)
 
 
 class EvaluationConfig(BaseModel):

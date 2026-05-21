@@ -191,7 +191,10 @@ def make_search_web():
                 hits = ddgs.text(query, max_results=4)
             if not hits:
                 return "No web results found."
-            blocks = [f"[{h['title']}]\n{h['body']}" for h in hits if h.get("body")]
+            blocks = [
+                f"[{h['title']}]\n{h.get('href', '')}\n{h['body']}"
+                for h in hits if h.get("body")
+            ]
             return "\n\n---\n\n".join(blocks) or "No web results found."
         except Exception as e:  # noqa: BLE001
             log.warning(f"search_web failed: {e}")

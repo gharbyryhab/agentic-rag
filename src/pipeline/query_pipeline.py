@@ -1,6 +1,7 @@
 """End-to-end query : question -> RagAgent -> answer."""
 from __future__ import annotations
 
+from concurrent.futures import Future
 from typing import Any
 
 from src.agents import ConversationMemory, RagAgent
@@ -32,18 +33,29 @@ class QueryPipeline:
             memory=self.memory,
         )
         cfg = get_settings()
-        self.judge = OnlineJudge(self.llm) if cfg.online_eval.enabled else None
+        self.judge = OnlineJudge() if cfg.online_eval.enabled else None
+        self._pending_judge: Future | None = None
         log.info("Pipeline prêt.")
 
     def ask(self, question: str) -> dict[str, Any]:
         result = self.agent.run(question)
         if self.judge:
-            self.judge.maybe_evaluate(
+            self._pending_judge = self.judge.maybe_evaluate(
                 question,
                 result.get("answer", ""),
+                contexts=result.get("contexts", []),
                 metadata={"route": result.get("route", "")},
             )
         return result
+
+    def flush_judge(self, timeout: float = 30.0) -> None:
+        """Block until the background judge finishes (if one was submitted)."""
+        if self._pending_judge is not None:
+            try:
+                self._pending_judge.result(timeout=timeout)
+            except Exception:  # noqa: BLE001
+                pass
+            self._pending_judge = None
 
     def reset_history(self) -> None:
         self.memory.clear()
