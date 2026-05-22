@@ -86,15 +86,33 @@ class RagAgent(BaseAgent):
                     "trace": [{"node": "memory_check", "answered": True}],
                 }
 
-        # 1) Route
+        # 1) OOD check — one LLM call, blocks the whole pipeline if out of domain
+        if self._check_out_of_domain(question):
+            log.info("OOD detected — skipping pipeline")
+            ood_answer = (
+                "Cette question dépasse le domaine de la knowledge base "
+                "(Data Science / Machine Learning / IA). "
+                "Je ne peux pas y répondre avec les ressources disponibles."
+            )
+            self.memory.add_assistant(ood_answer)
+            return {
+                "answer": ood_answer,
+                "route": "out_of_domain",
+                "sources": [],
+                "trace": [{"node": "ood_check", "result": "out_of_domain"}],
+            }
+
+        # 2) Route
         route = self.router.route(question)
         log.info(f"Routing → {route}")
 
-        # 2) Dispatch — each branch falls back to the other on failure
+        # 3) Dispatch — each branch falls back to the other on failure
         prior_history = self.memory.history()[:-1]  # exclude the current user turn
         if route == "agent":
             try:
-                result = self.react_agent.run(question, history=prior_history)
+                # Rewrite the question with conversation history before sending to ReAct
+                rewritten = self._rewrite_question(question, prior_history)
+                result = self.react_agent.run(rewritten, history=prior_history)
                 result["route"] = "agent"
             except Exception as e:  # noqa: BLE001
                 log.warning(f"Agent route failed ({type(e).__name__}: {e}), falling back to simple")
@@ -111,6 +129,25 @@ class RagAgent(BaseAgent):
 
         self.memory.add_assistant(result.get("answer", ""))
         return result
+
+    # ---------- OOD check ----------
+
+    def _check_out_of_domain(self, question: str) -> bool:
+        """Return True if the question is clearly outside the DS/ML/AI domain.
+
+        One LLM call with a minimal yes/no prompt. Returns False on any failure
+        so the pipeline always continues in case of doubt.
+        """
+        try:
+            system = self.prompts["ood_check_system"]
+            verdict = self.llm.generate(question, system=system).strip().lower()
+            first_word = verdict.split()[0].strip(".,!?\"'") if verdict else "yes"
+            is_ood = first_word == "no"
+            log.debug(f"OOD check → '{first_word}' (ood={is_ood})")
+            return is_ood
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"OOD check failed ({e}), assuming in-domain")
+            return False  # fail-safe : on laisse passer en cas d'erreur
 
     # ---------- Memory check ----------
 
@@ -132,6 +169,30 @@ class RagAgent(BaseAgent):
         if response.upper().startswith("MEMORY:"):
             return response[len("MEMORY:"):].strip()
         return None
+
+    # ---------- Query rewrite (shared between simple and agent paths) ----------
+
+    def _rewrite_question(self, question: str, history: list[dict]) -> str:
+        """Rewrite question into a standalone query using conversation history.
+
+        Returns the original question unchanged if:
+        - There is no prior assistant turn (first message in session)
+        - The rewrite LLM call fails
+        """
+        has_prior_assistant = any(t["role"] == "assistant" for t in history)
+        if not has_prior_assistant:
+            return question  # first turn — nothing to rewrite
+
+        history_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in history)
+        system = self.prompts["reformulate_system"]
+        user = f"Conversation history:\n{history_text}\n\nNew question: {question}"
+        try:
+            rewritten = self.llm.generate(user, system=system).strip()
+            log.debug(f"Rewrite: '{question[:60]}' → '{rewritten[:60]}'")
+            return rewritten or question
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Rewrite failed: {e}")
+            return question
 
     # ---------- Simple (CRAG-light) ----------
 
@@ -195,26 +256,15 @@ class RagAgent(BaseAgent):
 
     def _node_rewrite(self, state: RagState) -> RagState:
         history = self.memory.history()
-        has_prior_assistant = any(t["role"] == "assistant" for t in history)
-        if not has_prior_assistant:
-            return {
-                "rewritten_question": state["question"],
-                "trace": state.get("trace", []) + [{"node": "rewrite", "skipped": "first turn"}],
-            }
-
+        # Exclude the current user turn from the history passed to rewrite
         prior = history[:-1] if history and history[-1]["role"] == "user" else history
-        history_text = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in prior)
-
-        system = self.prompts["reformulate_system"]
-        user = f"Conversation history:\n{history_text}\n\nNew question: {state['question']}"
-        try:
-            rewritten = self.llm.generate(user, system=system).strip()
-        except Exception as e:  # noqa: BLE001
-            log.warning(f"Rewrite failed: {e}")
-            rewritten = state["question"]
+        rewritten = self._rewrite_question(state["question"], prior)
+        skipped = rewritten == state["question"]
         return {
             "rewritten_question": rewritten,
-            "trace": state.get("trace", []) + [{"node": "rewrite", "output": rewritten[:120]}],
+            "trace": state.get("trace", []) + [
+                {"node": "rewrite", "skipped": skipped, "output": rewritten[:120]}
+            ],
         }
 
     def _node_retrieve(self, state: RagState) -> RagState:
