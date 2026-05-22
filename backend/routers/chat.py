@@ -1,10 +1,11 @@
 """POST /chat — run a question through the RAG pipeline and persist the result."""
 from __future__ import annotations
 
+import asyncio
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -34,7 +35,8 @@ def _get_pipeline():
 
 @router.post("", response_model=ChatResponse)
 async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
-    pipeline = _get_pipeline()
+    # Load pipeline in a thread so the event loop is not blocked during model init
+    pipeline = await asyncio.to_thread(_get_pipeline)
 
     # ── Resolve or create session ───────────────────────────────────────────
     if req.session_id:
@@ -45,7 +47,7 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     else:
         session = Session(
             id=str(uuid.uuid4()),
-            title=req.question[:60],  # first 60 chars as title
+            title=req.question[:60],
         )
         db.add(session)
         await db.flush()
@@ -58,10 +60,10 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     )
     db.add(user_msg)
 
-    # ── Run RAG pipeline ────────────────────────────────────────────────────
+    # ── Run RAG pipeline in thread pool (CPU/IO-bound, ~5-30s) ─────────────
     t0 = time.time()
     try:
-        result = pipeline.ask(req.question)
+        result = await asyncio.to_thread(pipeline.ask, req.question)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Pipeline error: {exc}") from exc
     latency = round(time.time() - t0, 2)
@@ -85,7 +87,7 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
     await db.execute(
         update(Session)
         .where(Session.id == session.id)
-        .values(updated_at=datetime.utcnow())
+        .values(updated_at=datetime.now(timezone.utc))
     )
 
     # ── Request log ────────────────────────────────────────────────────────
@@ -107,7 +109,7 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
             book_title=s.get("book_title", ""),
             page=str(s.get("page", "")),
             score=float(s.get("score", 0.0)),
-            snippet=s.get("snippet", "")[:500],  # truncate only for API payload
+            snippet=s.get("snippet", "")[:500],
         )
         for s in sources_raw
     ]

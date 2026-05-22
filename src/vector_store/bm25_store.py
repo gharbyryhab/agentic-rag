@@ -5,7 +5,7 @@ pickle. For ~135K chunks the in-memory footprint is acceptable (~50-100 MB)
 and queries are sub-millisecond.
 
 Storage layout:
-    vector_store/bm25/
+    vector_store/bm25/<strategy>/
         corpus.pkl    # list[list[str]]   — tokenized chunks
         ids.pkl       # list[str]         — parallel chunk ids
         texts.pkl     # list[str]         — original chunk texts
@@ -39,7 +39,11 @@ class BM25Store:
 
     def __init__(self) -> None:
         cfg = get_settings()
-        self.dir = cfg.absolute_path(cfg.paths.bm25_store)
+        strategy = cfg.chunking.strategy
+
+        # Strategy-scoped subfolder mirrors the Chroma layout so both indexes
+        # always point to the same chunking strategy at the same time.
+        self.dir = cfg.absolute_path(cfg.paths.bm25_store) / strategy
         self.dir.mkdir(parents=True, exist_ok=True)
 
         self._corpus: list[list[str]] = []

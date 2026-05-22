@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -103,13 +103,11 @@ async def import_eval_from_disk(tag: str, db: AsyncSession = Depends(get_db)):
     # Find the most recent directory matching the tag prefix
     candidates = sorted(EVAL_DIR.glob(f"{tag}*"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"No eval dir found matching '{tag}' in {EVAL_DIR}")
 
     run_dir = candidates[0]
     metrics_file = run_dir / "metrics.json"
     if not metrics_file.exists():
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"metrics.json not found in {run_dir}")
 
     with metrics_file.open() as f:

@@ -25,8 +25,11 @@ class ChromaStore(VectorStore):
     def __init__(self) -> None:
         cfg = get_settings()
         self._cfg = cfg.vector_store
+        strategy = cfg.chunking.strategy
 
-        persist_dir = cfg.absolute_path(self._cfg.persist_directory)
+        # Strategy-scoped subfolder prevents recursive and semantic indexes
+        # from overwriting each other when the chunking strategy is switched.
+        persist_dir = cfg.absolute_path(self._cfg.persist_directory) / strategy
         persist_dir.mkdir(parents=True, exist_ok=True)
 
         self.client = chromadb.PersistentClient(
@@ -39,7 +42,8 @@ class ChromaStore(VectorStore):
         )
         log.info(
             f"Chroma collection '{self._cfg.collection_name}' "
-            f"loaded from {persist_dir} ({self.collection.count()} vectors)"
+            f"[strategy={strategy}] loaded from {persist_dir} "
+            f"({self.collection.count()} vectors)"
         )
 
     # ---------- Write ----------
