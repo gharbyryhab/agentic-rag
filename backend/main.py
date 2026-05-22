@@ -1,6 +1,8 @@
 """FastAPI application entry point."""
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,10 +11,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.database import init_db
 from backend.routers import chat, feedback, metrics, sessions
 
+log = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    try:
+        # Pre-warm the pipeline (loads BGE + ChromaDB + BM25) in a thread so
+        # the first user request is not penalised with a ~10s cold-start delay.
+        await asyncio.to_thread(chat._get_pipeline)
+        log.info("Pipeline pre-warmed successfully")
+    except Exception as e:
+        log.warning(f"Pipeline pre-warm failed ({e}); will retry on first request")
     yield
 
 

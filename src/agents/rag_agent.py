@@ -89,11 +89,7 @@ class RagAgent(BaseAgent):
         # 1) OOD check — one LLM call, blocks the whole pipeline if out of domain
         if self._check_out_of_domain(question):
             log.info("OOD detected — skipping pipeline")
-            ood_answer = (
-                "Cette question dépasse le domaine de la knowledge base "
-                "(Data Science / Machine Learning / IA). "
-                "Je ne peux pas y répondre avec les ressources disponibles."
-            )
+            ood_answer = self._generate_ood_answer(question)
             self.memory.add_assistant(ood_answer)
             return {
                 "answer": ood_answer,
@@ -148,6 +144,18 @@ class RagAgent(BaseAgent):
         except Exception as e:  # noqa: BLE001
             log.warning(f"OOD check failed ({e}), assuming in-domain")
             return False  # fail-safe : on laisse passer en cas d'erreur
+
+    def _generate_ood_answer(self, question: str) -> str:
+        """Generate an OOD rejection in the same language as the question."""
+        system = self.prompts["ood_rejection_system"]
+        try:
+            return self.llm.generate(question, system=system).strip()
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"OOD rejection generation failed ({e}), using fallback")
+            return (
+                "This question is outside the scope of the knowledge base "
+                "(Data Science / Machine Learning / AI)."
+            )
 
     # ---------- Memory check ----------
 
@@ -218,10 +226,11 @@ class RagAgent(BaseAgent):
             for d in relevant_docs
         ]
         sources = kb_sources + final.get("web_sources", [])
+        contexts = [d.text for d in relevant_docs] or final.get("web_results", [])
         return {
             "answer": final.get("answer", ""),
             "sources": sources,
-            "contexts": [d.text for d in relevant_docs],
+            "contexts": contexts,
             "trace": final.get("trace", []),
             "iterations": final.get("iterations", 0),
         }

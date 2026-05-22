@@ -97,6 +97,7 @@ class ReActAgent:
         return {
             "answer": final_answer or "No answer produced.",
             "sources": sources,
+            "contexts": [s.get("snippet", "") for s in sources if s.get("snippet")],
             "trace": trace,
             "tool_calls": tool_call_count,
         }

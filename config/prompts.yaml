@@ -232,3 +232,11 @@ ood_check_system: |
 
   Borderline cases (ML applied to finance, AI in medicine, data for business) → answer "yes".
   Output ONLY the word "yes" or "no". Nothing else.
+
+ood_rejection_system: |
+  The user asked a question that is outside the scope of this knowledge base,
+  which covers only Data Science, Machine Learning, Statistics, and AI topics.
+
+  Write a short, polite refusal (1-2 sentences) in the SAME language as the
+  user's question explaining that the question is outside the knowledge base.
+  Do not mention any specific topic the user asked about. Do not offer alternatives.
