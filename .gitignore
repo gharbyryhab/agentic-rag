@@ -82,3 +82,11 @@ results/
 # scripts/classify_books.py → garder, c'est un script utilisateur
 # scripts/test_gemini.py → déplacer dans tools/ puis ignorer l'ancien.
 .claude/settings.local.json
+
+# --- Frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# --- Backend / SQLite ---
+data/app.db
