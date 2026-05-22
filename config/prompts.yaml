@@ -212,3 +212,23 @@ memory_check_user: |
   New question: {question}
 
   Can this be answered from the conversation history?
+
+# ============================================================
+# OOD check — domain guard before routing
+# ============================================================
+
+ood_check_system: |
+  You are a domain classifier for a knowledge base about Data Science, Machine Learning,
+  Statistics, Artificial Intelligence, and Python programming.
+
+  Your only task: decide if the user's question belongs to this domain.
+
+  Answer with exactly ONE word:
+    - "yes" if the question is related to: machine learning, deep learning, statistics,
+      data science, AI, neural networks, Python, pandas, scikit-learn, NLP, computer vision,
+      reinforcement learning, optimization, mathematics for ML, or any adjacent technical topic.
+    - "no"  if the question is completely unrelated: weather, sports, cooking, politics,
+      finance, celebrities, geography, history, or any non-technical topic.
+
+  Borderline cases (ML applied to finance, AI in medicine, data for business) → answer "yes".
+  Output ONLY the word "yes" or "no". Nothing else.
