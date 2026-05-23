@@ -315,8 +315,8 @@ function MessageBubble({ msg, onFeedback }) {
 function SourceCard({ source }) {
   const isWeb =
     source.source?.startsWith("http") ||
-    source.source?.includes("tool:") ||
-    source.source?.includes("<tool:");
+    source.book_title === "Web" ||
+    source.source === "search_web";
 
   return (
     <div className="bg-slate-50/80 border border-slate-100 rounded-xl px-3.5 py-2.5 text-xs space-y-1.5">
