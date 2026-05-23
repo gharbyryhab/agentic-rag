@@ -16,6 +16,7 @@ of the two sub-pipelines. Conversation memory is shared.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -37,6 +38,7 @@ log = get_logger(__name__)
 
 class RagState(TypedDict, total=False):
     question: str
+    history: list[dict]      # injected once in _run_simple — nodes must NOT touch self.memory
     rewritten_question: str
     documents: list[SearchResult]
     relevant_documents: list[SearchResult]
@@ -205,8 +207,11 @@ class RagAgent(BaseAgent):
     # ---------- Simple (CRAG-light) ----------
 
     def _run_simple(self, question: str) -> dict[str, Any]:
+        # Snapshot history once here — nodes must read state["history"], never self.memory
+        prior_history = self.memory.history()[:-1]  # exclude the current user turn
         initial: RagState = {
             "question": question,
+            "history": prior_history,
             "rewritten_question": question,
             "iterations": 0,
             "trace": [],
@@ -264,15 +269,51 @@ class RagAgent(BaseAgent):
     # ---------- Nodes ----------
 
     def _node_rewrite(self, state: RagState) -> RagState:
-        history = self.memory.history()
-        # Exclude the current user turn from the history passed to rewrite
-        prior = history[:-1] if history and history[-1]["role"] == "user" else history
-        rewritten = self._rewrite_question(state["question"], prior)
-        skipped = rewritten == state["question"]
+        # Read history from state — never from self.memory (pure node, no side effects)
+        history = state.get("history", [])
+        is_retry = state.get("iterations", 0) > 0
+        previous_rewrite = state.get("rewritten_question", state["question"])
+
+        system = self.prompts["reformulate_system"]
+
+        if is_retry:
+            # The previous rewritten query found nothing relevant.
+            # Ask the LLM to approach from a different angle, explicitly showing the failure.
+            user = self.prompts["reformulate_retry_user"].format(
+                previous_query=previous_rewrite,
+                question=state["question"],
+            )
+            log.debug(f"Rewrite retry — previous failed query: '{previous_rewrite[:80]}'")
+        else:
+            # First pass: standard contextual rewrite using conversation history
+            has_prior_assistant = any(t["role"] == "assistant" for t in history)
+            if not has_prior_assistant:
+                # No prior conversation → nothing to rewrite, return original question
+                return {
+                    "rewritten_question": state["question"],
+                    "trace": state.get("trace", []) + [
+                        {"node": "rewrite", "skipped": True, "is_retry": False,
+                         "output": state["question"][:120]}
+                    ],
+                }
+            history_text = "\n".join(
+                f"{t['role'].upper()}: {t['content']}" for t in history
+            )
+            user = f"Conversation history:\n{history_text}\n\nNew question: {state['question']}"
+
+        try:
+            rewritten = self.llm.generate(user, system=system).strip()
+            rewritten = rewritten or state["question"]
+        except Exception as e:  # noqa: BLE001
+            log.warning(f"Rewrite failed: {e}")
+            rewritten = state["question"]
+
+        log.debug(f"Rewrite (retry={is_retry}): '{state['question'][:60]}' → '{rewritten[:60]}'")
         return {
             "rewritten_question": rewritten,
             "trace": state.get("trace", []) + [
-                {"node": "rewrite", "skipped": skipped, "output": rewritten[:120]}
+                {"node": "rewrite", "skipped": False, "is_retry": is_retry,
+                 "output": rewritten[:120]}
             ],
         }
 
@@ -381,13 +422,22 @@ class RagAgent(BaseAgent):
         user = self.prompts["grade_batch_user"].format(
             question=question, documents=numbered, n=len(documents)
         )
+        # Matches "yes" or "no" as the first meaningful word of a line,
+        # tolerating a leading number and punctuation (e.g. "1. yes", "2) no", "3: yes").
+        _YES = re.compile(r"^\s*\d*\s*[.):\-]?\s*yes\b", re.IGNORECASE)
+        _NO  = re.compile(r"^\s*\d*\s*[.):\-]?\s*no\b",  re.IGNORECASE)
         try:
             response = self.llm.generate(user, system=system).strip()
-            lines = [ln.strip().lower() for ln in response.splitlines() if ln.strip()]
+            lines = [ln.strip() for ln in response.splitlines() if ln.strip()]
             decisions: list[bool] = []
             for line in lines[: len(documents)]:
-                decisions.append("yes" in line)
-            # Pad with False (discard) if model returned a summary instead of per-doc answers
+                if _YES.match(line):
+                    decisions.append(True)
+                elif _NO.match(line):
+                    decisions.append(False)
+                else:
+                    decisions.append(False)  # unparseable line → conservative default
+            # Pad with False if model returned fewer lines than expected
             while len(decisions) < len(documents):
                 decisions.append(False)
             return decisions
