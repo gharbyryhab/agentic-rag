@@ -283,3 +283,133 @@ Question de l'utilisateur
 | `src/agents/react_agent.py` | Fix snippets ReAct tronqués |
 | `config/prompts.yaml` | Ajout prompt `ood_check_system` |
 | `backend/routers/chat.py` | Fix cartesian product SQLAlchemy + import `datetime` |
+
+---
+
+## 23 Mai 2026 — Corrections architecturales CRAG + ReAct
+
+> **Objectif** : corriger les fautes architecturales identifiées dans le pipeline CRAG-light et le chemin ReAct après une analyse approfondie du code. Les corrections portent sur la pureté des nœuds LangGraph, l'efficacité de la boucle de retry CRAG, la robustesse du parsing du grader, la qualité du prompt de grading, et l'affichage des sources du chemin ReAct.
+
+---
+
+### 10.1 Corrections implémentées
+
+---
+
+#### A. `history` dans le state LangGraph — `src/agents/rag_agent.py`
+
+**Problème détecté :** Le nœud `_node_rewrite` lisait `self.memory.history()` directement — un objet externe mutable partagé. Un nœud LangGraph doit être une fonction pure (`state_in → state_out`), sans dépendances cachées sur des objets extérieurs. Ce couplage rendait le graphe non-reproductible et impossible à tester unitairement.
+
+**Correction :**
+- Ajout du champ `history: list[dict]` dans `RagState` (snapshot de la mémoire, injecté une seule fois à l'entrée du graphe).
+- Dans `_run_simple()` : `prior_history = self.memory.history()[:-1]` injecté dans l'état initial — c'est le seul endroit où `self.memory` est lu pour l'historique.
+- Dans `_node_rewrite` : lecture de `state.get("history", [])` au lieu de `self.memory.history()`.
+
+---
+
+#### B. Boucle de retry CRAG inutile — `src/agents/rag_agent.py` + `config/prompts.yaml`
+
+**Problème détecté :** Quand `_decide_after_grade` renvoyait vers `rewrite` (0 documents pertinents), le nœud `_node_rewrite` recevait exactement les mêmes inputs qu'à l'itération précédente — même `state["question"]` (original, inchangé), même `self.memory` (inchangé). Le LLM produisait donc la même réécriture → mêmes documents → même grading → web fallback sans avoir vraiment réessayé. Deux appels LLM gaspillés.
+
+**Correction :**
+- `_node_rewrite` détecte maintenant `is_retry = state.get("iterations", 0) > 0`.
+- Sur le premier passage : comportement identique à avant (rewrite contextuel avec historique).
+- Sur un retry : utilisation d'un prompt dédié `reformulate_retry_user` qui indique explicitement au LLM que la query précédente `{previous_query}` a échoué et lui demande un angle complètement différent (synonymes, scope plus large/plus étroit, reformulation en définition, etc.).
+- `previous_query` est lu depuis `state.get("rewritten_question")` — la réécriture qui a déjà échoué.
+
+**Nouveau prompt ajouté :** `reformulate_retry_user` dans `config/prompts.yaml`.
+
+---
+
+#### C. Parsing fragile du grader — `src/agents/rag_agent.py`
+
+**Problème détecté :** La ligne `decisions.append("yes" in line)` cherchait le mot "yes" n'importe où dans la ligne. Une réponse LLM comme `"no, this is not a yes for this query"` était parsée comme `True` (faux positif) car "yes" apparaît dans la justification négative. Les documents non pertinents passaient le grading silencieusement.
+
+**Correction :** Remplacement par deux regex compilées qui vérifient que "yes" ou "no" est le **premier mot significatif** de la ligne, en tolérant un numéro et une ponctuation optionnels en préfixe (`"1. yes"`, `"2) no"`, `"3: yes"`). Le `\b` (word boundary) empêche de matcher "yesterday". Toute ligne non parseable → `False` par défaut (comportement conservateur).
+
+```python
+_YES = re.compile(r"^\s*\d*\s*[.):\-]?\s*yes\b", re.IGNORECASE)
+_NO  = re.compile(r"^\s*\d*\s*[.):\-]?\s*no\b",  re.IGNORECASE)
+```
+
+---
+
+#### D. Prompt de grading trop vague — `config/prompts.yaml`
+
+**Problème détecté :** Le `grade_batch_system` actif était commenté (aucun prompt actif pour le grader). L'ancien prompt commenté ne définissait aucun critère de pertinence — le LLM devait deviner sur quelle base décider. Dans une base entièrement ML/AI, presque tout est "lié" au sujet → grading trop permissif, filtrage inefficace.
+
+**Correction :** Nouveau `grade_batch_system` actif avec :
+- Critère explicite : `"DIRECTLY helps answer"` au lieu de rien.
+- Distinction claire : "mentionner le sujet" ≠ "aider à répondre".
+- Exemple concret du domaine : CNNs ≠ Random Forests même si les deux sont ML.
+- Format de sortie inchangé (liste numérotée yes/no).
+- Ancien prompt conservé commenté comme référence.
+
+---
+
+#### E. Sources du chemin ReAct — `src/agents/react_agent.py`
+
+**Problème détecté :** Les sources retournées par le chemin ReAct affichaient le nom de l'outil (`search_knowledge_base`) comme `book_title` au lieu du vrai titre du livre. Le texte formaté par `_format_results` contenait les vraies références `[Deep Learning — Goodfellow, p.127]` dans le snippet mais elles n'étaient pas extraites en champs structurés. Le chemin CRAG retournait des sources propres ; le chemin ReAct des sources inutilisables — incohérence de qualité.
+
+**Correction :**
+- Ajout de la fonction `_parse_tool_sources(tool_text, tool_name)` qui découpe le texte formaté en blocs (séparateur `\n\n---\n\n`) et extrait le `book_title` et la `page` de chaque header `[...]` via la regex `_HEADER_RE`.
+- Le tool `search_web` est traité séparément (format différent) → `book_title = "Web"`.
+- Fallback sur le nom de l'outil si le parsing échoue sur un bloc.
+- Au lieu d'une source par appel outil → une source par chunk retourné (plus granulaire).
+
+---
+
+#### F. Icône Globe/Livre incorrecte — `frontend/src/pages/Chat.jsx`
+
+**Problème détecté :** La logique `isWeb` du composant `SourceCard` détectait `<tool:` dans le champ `source` pour afficher l'icône Globe 🌐. Résultat : les sources KB (livres) affichaient une icône Globe, et les résultats web affichaient une icône Livre après la correction E.
+
+**Correction :** La détection `isWeb` utilise maintenant `book_title === "Web"` (valeur explicite retournée par le tool web) plutôt que de chercher `<tool:` dans le champ `source`.
+
+```javascript
+// Avant
+source.source?.includes("tool:") || source.source?.includes("<tool:")
+// Après
+source.book_title === "Web" || source.source === "search_web"
+```
+
+---
+
+### 10.2 Critiques identifiées, discutées, non implémentées
+
+#### AMBIGUOUS grade + Knowledge Refinement (CRAG paper)
+**Problème :** Le papier CRAG original définit 3 grades (CORRECT / INCORRECT / AMBIGUOUS). L'implémentation actuelle n'a que yes/no. Les chunks partiellement pertinents sont soit gardés entiers (bruit dans le contexte) soit jetés (perte d'information). La "knowledge refinement" — extraire uniquement les phrases pertinentes d'un chunk AMBIGUOUS — est la contribution centrale de CRAG et est absente.
+
+**Raison du report :** Chaque chunk AMBIGUOUS nécessite un appel LLM supplémentaire pour l'extraction. Avec 5 chunks potentiellement AMBIGUOUS, le coût en tokens et RPM est significatif sur un free tier. **Reporté au lendemain** pour décider de la stratégie (limiter le nombre de chunks raffinés, utiliser un modèle plus petit, ou tout faire en un seul appel batch).
+
+#### Outils redondants dans le ReAct agent (Critique 8)
+**Problème :** `search_by_category`, `search_by_level`, et `search_with_filters` se chevauchent — `search_with_filters` peut faire les deux premiers avec ses paramètres optionnels. Le LLM appelle souvent les deux séparément au lieu d'utiliser `search_with_filters` une seule fois, gaspillant du budget outil.
+
+**Statut :** Identifié, non implémenté.
+
+---
+
+### 10.3 Paramètres intentionnellement en mode développement
+
+Ces valeurs sont volontairement non-production pendant la phase de dev :
+
+| Paramètre | Valeur actuelle | Valeur production recommandée |
+|-----------|-----------------|-------------------------------|
+| `agent.react.timeout_s` | `999999` | `60` |
+| `online_eval.sample_rate` | `1.0` | `0.15` |
+
+---
+
+### 10.4 Code mort identifié
+
+Les prompts `grade_system` et `grade_user` dans `config/prompts.yaml` ne sont appelés nulle part dans le code — vestiges d'une ancienne implémentation de grading document par document avant le batch grading. Peuvent être supprimés ou conservés comme référence.
+
+---
+
+### 10.5 Fichiers modifiés dans cette session
+
+| Fichier | Nature de la modification |
+|---------|--------------------------|
+| `src/agents/rag_agent.py` | Ajout `history` dans `RagState`, injection dans `_run_simple`, refactor `_node_rewrite` (pureté + retry), fix parsing regex grader, import `re` |
+| `src/agents/react_agent.py` | Ajout `_parse_tool_sources()`, `_HEADER_RE`, import `re` |
+| `config/prompts.yaml` | Ajout `reformulate_retry_user`, nouveau `grade_batch_system` actif |
+| `frontend/src/pages/Chat.jsx` | Fix logique `isWeb` dans `SourceCard` |
