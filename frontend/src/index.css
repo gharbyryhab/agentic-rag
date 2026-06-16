@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -9,47 +11,160 @@
     -moz-osx-font-smoothing: grayscale;
   }
   body {
-    @apply bg-slate-50 text-slate-900;
+    background: #08091a;
+    color: #e2e8f0;
   }
-  * {
-    box-sizing: border-box;
-  }
+  * { box-sizing: border-box; }
 }
 
 @layer components {
+  /* ── Glassmorphism cards ─────────────────────────────── */
+  .glass {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+  .glass-strong {
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(40px);
+  }
+  .glass-card {
+    @apply glass rounded-2xl shadow-card transition-all duration-300;
+  }
+  .glass-card:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(99, 102, 241, 0.2);
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(99,102,241,0.1);
+    transform: translateY(-1px);
+  }
+
+  /* ── Gradient text ───────────────────────────────────── */
+  .text-gradient {
+    background: linear-gradient(135deg, #a5b4fc 0%, #c4b5fd 50%, #93c5fd 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .text-gradient-indigo {
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* ── Buttons ─────────────────────────────────────────── */
   .btn-primary {
-    @apply bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-medium px-4 py-2 rounded-lg transition-all duration-150 shadow-sm hover:shadow-md disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:shadow-sm disabled:hover:bg-indigo-600;
+    @apply relative overflow-hidden font-semibold text-white text-sm px-5 py-2.5 rounded-xl
+           transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed;
+    background: linear-gradient(135deg, #6366f1 0%, #7c3aed 100%);
+    box-shadow: 0 4px 20px rgba(99,102,241,0.35), 0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.12);
+  }
+  .btn-primary:hover:not(:disabled) {
+    box-shadow: 0 6px 30px rgba(99,102,241,0.5), 0 2px 4px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+    transform: translateY(-1px);
+  }
+  .btn-primary:active:not(:disabled) {
+    transform: translateY(0);
   }
   .btn-ghost {
-    @apply hover:bg-slate-100 active:bg-slate-200 text-slate-600 hover:text-slate-900 font-medium px-3 py-2 rounded-lg transition-colors duration-150;
-  }
-  .btn-danger-ghost {
-    @apply hover:bg-red-50 text-slate-400 hover:text-red-500 p-1.5 rounded-lg transition-all duration-150;
-  }
-  .card {
-    @apply bg-white rounded-xl border border-slate-200/80 shadow-sm;
-  }
-  .card-hover {
-    @apply bg-white rounded-xl border border-slate-200/80 shadow-sm hover:shadow-md hover:border-slate-300/80 transition-all duration-200;
-  }
-  .input {
-    @apply border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white placeholder-slate-400
-           focus:outline-none focus:ring-2 focus:ring-indigo-500/25 focus:border-indigo-400
+    @apply text-slate-400 hover:text-slate-200 font-medium px-3 py-2 rounded-xl
            transition-all duration-150;
   }
-  .badge {
-    @apply inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium;
+  .btn-ghost:hover {
+    background: rgba(255,255,255,0.06);
   }
-  .badge-indigo  { @apply badge bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200/60; }
-  .badge-emerald { @apply badge bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200/60; }
-  .badge-violet  { @apply badge bg-violet-50 text-violet-700 ring-1 ring-violet-200/60; }
-  .badge-amber   { @apply badge bg-amber-50 text-amber-700 ring-1 ring-amber-200/60; }
-  .badge-sky     { @apply badge bg-sky-50 text-sky-700 ring-1 ring-sky-200/60; }
-  .badge-slate   { @apply badge bg-slate-100 text-slate-500; }
+  .btn-danger {
+    @apply font-medium text-sm px-4 py-2.5 rounded-xl transition-all duration-150;
+    background: rgba(239,68,68,0.1);
+    border: 1px solid rgba(239,68,68,0.2);
+    color: #f87171;
+  }
+  .btn-danger:hover {
+    background: rgba(239,68,68,0.18);
+    border-color: rgba(239,68,68,0.35);
+  }
+
+  /* ── Inputs ──────────────────────────────────────────── */
+  .input {
+    @apply w-full text-sm text-slate-200 placeholder-slate-600 rounded-xl px-4 py-2.5
+           transition-all duration-200 focus:outline-none;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  .input:focus {
+    background: rgba(255,255,255,0.07);
+    border-color: rgba(99,102,241,0.5);
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
+  }
+
+  /* ── Legacy card (Chat etc.) ─────────────────────────── */
+  .card {
+    @apply glass rounded-2xl;
+  }
+  .card-hover {
+    @apply glass-card;
+  }
+
+  /* ── Badges ──────────────────────────────────────────── */
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold;
+  }
+  .badge-indigo  { @apply badge; background: rgba(99,102,241,0.15); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.25); }
+  .badge-emerald { @apply badge; background: rgba(16,185,129,0.12); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.2); }
+  .badge-violet  { @apply badge; background: rgba(139,92,246,0.15); color: #c4b5fd; border: 1px solid rgba(139,92,246,0.25); }
+  .badge-amber   { @apply badge; background: rgba(245,158,11,0.12); color: #fcd34d; border: 1px solid rgba(245,158,11,0.2); }
+  .badge-sky     { @apply badge; background: rgba(14,165,233,0.12); color: #7dd3fc; border: 1px solid rgba(14,165,233,0.2); }
+  .badge-slate   { @apply badge; background: rgba(148,163,184,0.1); color: #94a3b8; }
+
+  /* ── Section divider ─────────────────────────────────── */
+  .divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  }
+
+  /* ── Stat card gradient tops ─────────────────────────── */
+  .stat-gradient-indigo { background: linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(139,92,246,0.08) 100%); }
+  .stat-gradient-violet { background: linear-gradient(135deg, rgba(139,92,246,0.15) 0%, rgba(99,102,241,0.08) 100%); }
+  .stat-gradient-emerald{ background: linear-gradient(135deg, rgba(16,185,129,0.15) 0%, rgba(5,150,105,0.08) 100%); }
+  .stat-gradient-amber  { background: linear-gradient(135deg, rgba(245,158,11,0.15) 0%, rgba(217,119,6,0.08)  100%); }
+  .stat-gradient-rose   { background: linear-gradient(135deg, rgba(244,63,94,0.15)  0%, rgba(225,29,72,0.08)  100%); }
+  .stat-gradient-cyan   { background: linear-gradient(135deg, rgba(6,182,212,0.15)  0%, rgba(14,116,144,0.08) 100%); }
+
+  /* ── Active nav item ─────────────────────────────────── */
+  .nav-active {
+    background: linear-gradient(90deg, rgba(99,102,241,0.2) 0%, rgba(99,102,241,0.05) 100%);
+    border-left: 2px solid #6366f1;
+    color: #a5b4fc;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+  .nav-inactive {
+    color: #64748b;
+    border-left: 2px solid transparent;
+  }
+  .nav-inactive:hover {
+    background: rgba(255,255,255,0.04);
+    color: #94a3b8;
+  }
 }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 4px; height: 4px; }
+/* ── Scrollbar ───────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { @apply bg-slate-200 rounded-full; }
-::-webkit-scrollbar-thumb:hover { @apply bg-slate-300; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 100px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+
+/* ── Recharts dark theme ─────────────────────────────────── */
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  background: #1a1b35 !important;
+  border: 1px solid rgba(255,255,255,0.1) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.5) !important;
+}
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: rgba(255,255,255,0.04) !important;
+}
+.recharts-text { fill: #475569 !important; }

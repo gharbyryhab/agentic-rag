@@ -1,3 +1,3 @@
-from src.config.settings import Settings, get_prompts, get_settings
+from src.config.settings import CONFIG_PATH, Settings, get_prompts, get_settings
 
-__all__ = ["Settings", "get_settings", "get_prompts"]
+__all__ = ["CONFIG_PATH", "Settings", "get_settings", "get_prompts"]
