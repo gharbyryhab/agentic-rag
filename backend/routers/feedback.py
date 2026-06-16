@@ -5,8 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.auth import get_current_user
 from backend.database import get_db
-from backend.models import Feedback, Message
+from backend.models import Feedback, Message, User
 from backend.schemas import FeedbackOut, FeedbackRequest
 
 router = APIRouter(prefix="/messages", tags=["feedback"])
@@ -14,7 +15,10 @@ router = APIRouter(prefix="/messages", tags=["feedback"])
 
 @router.post("/{message_id}/feedback", response_model=FeedbackOut)
 async def submit_feedback(
-    message_id: str, req: FeedbackRequest, db: AsyncSession = Depends(get_db)
+    message_id: str,
+    req: FeedbackRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     # Verify message exists and is from assistant
     msg = (await db.execute(select(Message).where(Message.id == message_id))).scalar_one_or_none()

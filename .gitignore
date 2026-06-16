@@ -90,3 +90,13 @@ frontend/.vite/
 
 # --- Backend / SQLite ---
 data/app.db
+
+# --- Fichiers parasites ---
+=0.0.9
+migrate_add_role.py
+
+# --- Backup vector store ---
+vector_store_backup_recursive/
+
+# --- Migrations auto-générées (garder le dossier, ignorer les .pyc) ---
+backend/migrations/versions/__pycache__/

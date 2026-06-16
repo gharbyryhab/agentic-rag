@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.database import Base
@@ -19,6 +19,37 @@ def _uuid() -> str:
 
 
 # ─────────────────────────────────────────────
+# Users
+# ─────────────────────────────────────────────
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    email: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, default="user", nullable=False)  # "admin" | "user"
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+    sessions: Mapped[list[Session]] = relationship("Session", back_populates="user")
+
+
+# ─────────────────────────────────────────────
+# App Settings (runtime overrides, admin only)
+# ─────────────────────────────────────────────
+
+class AppSetting(Base):
+    """Key-value store for runtime-configurable settings."""
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+# ─────────────────────────────────────────────
 # Sessions & Messages
 # ─────────────────────────────────────────────
 
@@ -27,9 +58,11 @@ class Session(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
     title: Mapped[str] = mapped_column(String, default="New conversation")
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
+    user: Mapped[User | None] = relationship("User", back_populates="sessions")
     messages: Mapped[list[Message]] = relationship(
         "Message", back_populates="session", cascade="all, delete-orphan", order_by="Message.created_at"
     )
